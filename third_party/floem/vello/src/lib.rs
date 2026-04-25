@@ -475,6 +475,18 @@ impl Renderer for VelloRenderer {
 
         out
     }
+
+    fn wgpu_device(&self) -> Option<&wgpu::Device> {
+        Some(&self.device)
+    }
+
+    fn wgpu_queue(&self) -> Option<&wgpu::Queue> {
+        Some(&self.queue)
+    }
+
+    fn wgpu_adapter(&self) -> Option<&wgpu::Adapter> {
+        Some(&self.adapter)
+    }
 }
 
 impl VelloRenderer {

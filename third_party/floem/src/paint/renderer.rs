@@ -428,4 +428,28 @@ impl floem_renderer::Renderer for Renderer {
             Renderer::Uninitialized { .. } => None,
         }
     }
+
+    fn wgpu_device(&self) -> Option<&wgpu::Device> {
+        match self {
+            Renderer::Active(r) => r.wgpu_device(),
+            Renderer::TinySkia(r) => r.wgpu_device(),
+            Renderer::Uninitialized { .. } => None,
+        }
+    }
+
+    fn wgpu_queue(&self) -> Option<&wgpu::Queue> {
+        match self {
+            Renderer::Active(r) => r.wgpu_queue(),
+            Renderer::TinySkia(r) => r.wgpu_queue(),
+            Renderer::Uninitialized { .. } => None,
+        }
+    }
+
+    fn wgpu_adapter(&self) -> Option<&wgpu::Adapter> {
+        match self {
+            Renderer::Active(r) => r.wgpu_adapter(),
+            Renderer::TinySkia(r) => r.wgpu_adapter(),
+            Renderer::Uninitialized { .. } => None,
+        }
+    }
 }

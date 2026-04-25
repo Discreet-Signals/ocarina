@@ -206,6 +206,26 @@ pub trait Renderer {
     /// `None` after presenting the frame to the screen.
     fn finish(&mut self) -> Option<peniko::ImageBrush>;
 
+    /// Borrow the underlying `wgpu::Device` if the backend is GPU-based.
+    /// Returns `None` for CPU backends (tiny-skia) and for backends that
+    /// don't expose their device. Lets the host share the device with
+    /// other wgpu-using subsystems (e.g. an embedded 3D viewport).
+    fn wgpu_device(&self) -> Option<&wgpu::Device> {
+        None
+    }
+
+    /// Borrow the underlying `wgpu::Queue` if the backend is GPU-based.
+    /// See [`wgpu_device`](Self::wgpu_device).
+    fn wgpu_queue(&self) -> Option<&wgpu::Queue> {
+        None
+    }
+
+    /// Borrow the underlying `wgpu::Adapter` if the backend is GPU-based.
+    /// See [`wgpu_device`](Self::wgpu_device).
+    fn wgpu_adapter(&self) -> Option<&wgpu::Adapter> {
+        None
+    }
+
     /// Return a human-readable string identifying the renderer backend.
     ///
     /// Used by the Floem inspector. Implementations typically return a string
