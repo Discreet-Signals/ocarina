@@ -1,20 +1,23 @@
 [package]
-name         = "lapce"
+name         = "ocarina-editor"
 version      = { workspace = true }
 authors      = { workspace = true }
 edition      = { workspace = true }
 license      = { workspace = true }
 rust-version = { workspace = true }
-default-run  = "lapce"
+default-run  = "ocarina-editor"
 
 [dependencies]
 lapce-app   = { path = "./lapce-app" }
 lapce-proxy = { path = "./lapce-proxy" }
 
 [[bin]]
-name = "lapce"
+name = "ocarina-editor"
 path = "lapce-app/src/bin/lapce.rs"
 
+# Companion proxy binary for remote development (SSH-based).
+# Internal name kept as `lapce-proxy` because the binary is downloaded
+# by Lapce-protocol clients under that exact filename.
 [[bin]]
 name = "lapce-proxy"
 path = "lapce-proxy/src/bin/lapce-proxy.rs"
