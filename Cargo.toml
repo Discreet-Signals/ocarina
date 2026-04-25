@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "examples/hello-gameplay"]
+# Lapce + Floem live under third_party/ as git subtrees with their own
+# workspaces. Exclude so `cargo check --workspace` here doesn't pull
+# them in; build them via their own root Cargo.toml.
+exclude = ["third_party/lapce", "third_party/floem"]
 
 [workspace.package]
 edition = "2024"
