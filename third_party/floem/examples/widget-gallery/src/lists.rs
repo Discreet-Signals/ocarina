@@ -1,0 +1,107 @@
+use floem::{
+    prelude::*,
+    reactive::Effect,
+    style::CursorStyle,
+    taffy::{Line, prelude::*},
+    text::FontWeight,
+    theme::{StyleThemeExt, border_style},
+};
+
+use crate::{
+    checkbox::CROSS_SVG,
+    form::{form, form_item},
+};
+
+pub fn list_view() -> impl IntoView {
+    form((
+        form_item(
+            "Simple List".style(|s| s.grid_row(Line::from_line_index(1))),
+            simple_list().style(|s| s.grid_row(Line::from_line_index(2))),
+        ),
+        form_item(
+            "Enhanced List".style(|s| s.grid_row(Line::from_line_index(1))),
+            enhanced_list().style(|s| s.grid_row(Line::from_line_index(2))),
+        ),
+    ))
+    .style(|s| {
+        s.grid_template_columns([fr(1.), fr(1.), fr(1.), fr(1.)])
+            .grid_template_rows([auto(), auto(), length(20.), auto(), auto()])
+            .row_gap(20)
+            .justify_items(JustifyItems::Center)
+            .selectable(false)
+    })
+}
+
+fn simple_list() -> impl IntoView {
+    (0..100)
+        .list()
+        .style(|s| s.width_full().class(LabelClass, |s| s.height(24)))
+        .scroll()
+        .style(|s| s.size(100, 500).apply(border_style(true)))
+}
+
+fn enhanced_list() -> impl IntoView {
+    let long_list: Vec<(usize, (bool, i32))> =
+        (0..=100000).map(|v| (v as usize, (true, v))).collect();
+    let long_list = RwSignal::new(long_list);
+
+    let list_width = 180.0;
+    let item_height = 32.0;
+
+    let label =
+        |item: i32| item.style(|s| s.margin_left(6).height(32.0).font_size(22.0).items_center());
+
+    let x_mark = move |index| {
+        svg(CROSS_SVG)
+            .action(move || {
+                print!("Item Removed");
+                long_list.update(|list| {
+                    list.remove(index);
+                });
+            })
+            .style(|s| {
+                s.size(18.0, 18.)
+                    .font_weight(FontWeight::BOLD)
+                    .cursor(CursorStyle::Pointer)
+                    .border(1.0)
+                    .border_radius(16.0)
+                    .padding(2.)
+                    .margin_right(20.0)
+                    .with_theme(|s, t| {
+                        s.hover(|s| s.background(t.danger()).color(t.text()))
+                            .color(t.danger())
+                            .border_color(t.danger())
+                    })
+            })
+    };
+
+    let item_view = move |(index, (state, item))| {
+        let checkbox_state = RwSignal::new(state);
+        Effect::new(move |_| {
+            let state = checkbox_state.get();
+            long_list.update(|list| {
+                // because this is an immutable vector, getting the index will always result in the correct item even if we remove elements.
+                if let Some((_, (s, _v))) = list.get_mut(index) {
+                    *s = state;
+                };
+            });
+        });
+
+        Stack::horizontal((Checkbox::new_rw(checkbox_state), label(item), x_mark(index))).style(
+            move |s| {
+                s.items_center()
+                    .gap(5)
+                    .padding_left(6)
+                    .height(item_height)
+                    .class(CheckboxClass, |s| {
+                        s.with_theme(|s, t| s.selected(|s| s.color(t.text())))
+                    })
+            },
+        )
+    };
+
+    VirtualList::with_view(move || long_list, item_view)
+        .style(move |s| s.flex_col().flex_grow(1.0))
+        .scroll()
+        .style(move |s| s.width(list_width).height(500.0).apply(border_style(true)))
+}

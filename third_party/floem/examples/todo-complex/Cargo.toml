@@ -1,0 +1,15 @@
+[package]
+name = "todo-complex"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+confy = "1.0.0"
+floem = { path = "../..", features = [
+  "editor",
+  "serde",
+  "vello",
+], default-features = false }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+serde = { workspace = true }
+# serde = { version = "1.0.210", features = ["derive"] }

@@ -1,0 +1,9 @@
+[package]
+name = "color_palette"
+edition = "2021"
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+floem = { path = "../.." }
+palette = "0.7.6"

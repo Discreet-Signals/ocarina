@@ -1,0 +1,69 @@
+use floem::{imbl, prelude::*, style::Position};
+
+const SIDEBAR_WIDTH: f64 = 140.0;
+const TOPBAR_HEIGHT: f64 = 30.0;
+const SIDEBAR_ITEM_HEIGHT: f64 = 21.0;
+
+pub fn right_sidebar_view() -> impl IntoView {
+    let long_list: imbl::Vector<i32> = (0..100).collect();
+    let long_list = RwSignal::new(long_list);
+
+    let top_bar = Label::derived(|| String::from("Top bar"))
+        .style(|s| s.padding(10.0).width_full().height(TOPBAR_HEIGHT));
+
+    let side_bar = Scroll::new({
+        virtual_stack(
+            move || long_list.get(),
+            move |item| *item,
+            move |item| {
+                Label::derived(move || item.to_string()).style(move |s| {
+                    s.padding(10.0)
+                        .padding_top(3.0)
+                        .padding_bottom(3.0)
+                        .width(SIDEBAR_WIDTH)
+                        .height(SIDEBAR_ITEM_HEIGHT)
+                        .items_start()
+                        .border_bottom(1.0)
+                        .border_color(Color::from_rgb8(205, 205, 205))
+                })
+            },
+        )
+        .style(|s| s.flex_col().width(SIDEBAR_WIDTH - 1.0))
+    })
+    .style(|s| {
+        s.width(SIDEBAR_WIDTH)
+            .border_left(1.0)
+            .border_top(1.0)
+            .border_color(Color::from_rgb8(205, 205, 205))
+    });
+
+    let main_window = Scroll::new(
+        Container::new(
+            Label::derived(move || String::from("Hello world")).style(|s| s.padding(10.0)),
+        )
+        .style(|s| s.flex_col().items_start().padding_bottom(10.0)),
+    )
+    .style(|s| {
+        s.flex_col()
+            .flex_basis(0)
+            .min_width(0)
+            .flex_grow(1.0)
+            .border_top(1.0)
+            .border_color(Color::from_rgb8(205, 205, 205))
+    });
+
+    let content = Stack::horizontal((main_window, side_bar)).style(|s| {
+        s.position(Position::Absolute)
+            .inset_top(TOPBAR_HEIGHT)
+            .inset_bottom(0.0)
+            .width_full()
+    });
+
+    Stack::vertical((top_bar, content))
+        .style(|s| s.width_full().height_full())
+        .on_event_stop(listener::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
+            if *key == Key::Named(NamedKey::F11) {
+                floem::action::inspect();
+            }
+        })
+}

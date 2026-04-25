@@ -1,0 +1,226 @@
+use crate::ViewId;
+use crate::inspector::CapturedView;
+use crate::views::VirtualVector;
+use floem_reactive::{RwSignal, SignalGet, SignalUpdate};
+use std::collections::HashMap;
+use std::ops::AddAssign;
+use std::rc::Rc;
+use taffy::Display;
+
+#[derive(Clone)]
+pub struct CapturedDatas {
+    pub root: CapturedData,
+    pub focus_line: RwSignal<usize>,
+    by_data_id: HashMap<String, (ViewId, bool)>,
+}
+
+impl CapturedDatas {
+    pub fn init_from_view(view: Rc<CapturedView>) -> Self {
+        let root = CapturedData::init_from_view(view);
+        let mut by_data_id = HashMap::new();
+        root.fill_data_id_index(&mut by_data_id);
+        Self {
+            root,
+            focus_line: RwSignal::new(0),
+            by_data_id,
+        }
+    }
+
+    pub fn focus(&mut self, id: ViewId) {
+        if self.root.focus(id) {
+            self.focus_line.set(self.count_line(id));
+        }
+    }
+
+    fn count_line(&self, id: ViewId) -> usize {
+        let mut line = 0;
+        self.root.count_line(id, &mut line);
+        line
+    }
+
+    fn total(&self) -> usize {
+        self.root.total()
+    }
+
+    fn get_children(
+        &self,
+        next: &mut usize,
+        min: usize,
+        max: usize,
+        level: usize,
+    ) -> Vec<(usize, usize, CapturedData)> {
+        self.root.get_children(next, min, max, level)
+    }
+
+    pub fn visible_data_id_map(&self) -> HashMap<String, ViewId> {
+        self.by_data_id
+            .iter()
+            .filter_map(|(data_id, (view_id, is_visible))| {
+                if *is_visible {
+                    Some((data_id.clone(), *view_id))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+#[derive(Clone, Debug)]
+pub enum DataType {
+    Internal {
+        children: Vec<CapturedData>,
+        expanded: RwSignal<bool>,
+    },
+    Leaf,
+}
+#[derive(Clone, Debug)]
+pub struct CapturedData {
+    pub id: ViewId,
+    pub view_conf: Rc<CapturedView>,
+    pub ty: DataType,
+}
+
+impl CapturedData {
+    pub fn init_from_view(view: Rc<CapturedView>) -> Self {
+        if view.children.is_empty() {
+            Self {
+                id: view.id,
+                view_conf: view,
+                ty: DataType::Leaf,
+            }
+        } else {
+            let mut children = Vec::with_capacity(view.children.len());
+            for child in &view.children {
+                children.push(CapturedData::init_from_view(child.clone()));
+            }
+            let expanded = RwSignal::new(false);
+            Self {
+                id: view.id,
+                view_conf: view,
+                ty: DataType::Internal { children, expanded },
+            }
+        }
+    }
+    pub fn count_line(&self, id: ViewId, line: &mut usize) -> bool {
+        line.add_assign(1);
+        if self.id == id {
+            return true;
+        }
+        match &self.ty {
+            DataType::Internal { children, expanded } => {
+                if expanded.get_untracked() {
+                    for child in children {
+                        if child.count_line(id, line) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            DataType::Leaf => {}
+        }
+        false
+    }
+
+    pub fn focus(&mut self, id: ViewId) -> bool {
+        if self.id == id {
+            return true;
+        }
+        match &mut self.ty {
+            DataType::Internal { children, expanded } => {
+                for child in children.iter_mut() {
+                    if child.focus(id) {
+                        expanded.set(true);
+                        return true;
+                    }
+                }
+            }
+            DataType::Leaf => {}
+        }
+        false
+    }
+
+    pub fn expanded(&self) -> Option<RwSignal<bool>> {
+        match &self.ty {
+            DataType::Internal { expanded, .. } => Some(*expanded),
+            DataType::Leaf => None,
+        }
+    }
+
+    /// contain self?
+    fn total(&self) -> usize {
+        match &self.ty {
+            DataType::Internal { expanded, children } => {
+                if expanded.get() {
+                    let mut total = 1;
+                    for child in children {
+                        total += child.total();
+                    }
+                    total
+                } else {
+                    1
+                }
+            }
+            DataType::Leaf => 1,
+        }
+    }
+
+    fn get_children(
+        &self,
+        next: &mut usize,
+        min: usize,
+        max: usize,
+        level: usize,
+    ) -> Vec<(usize, usize, CapturedData)> {
+        let mut children_data = Vec::new();
+        if *next >= min && *next < max {
+            children_data.push((*next, level, self.clone()));
+        } else if *next >= max {
+            return children_data;
+        }
+        next.add_assign(1);
+        match &self.ty {
+            DataType::Internal { expanded, children } => {
+                if expanded.get() {
+                    for child in children {
+                        let child_children = child.get_children(next, min, max, level + 1);
+                        if !child_children.is_empty() {
+                            children_data.extend(child_children);
+                        }
+                        if *next > max {
+                            break;
+                        }
+                    }
+                }
+            }
+            DataType::Leaf => {}
+        }
+        children_data
+    }
+
+    fn fill_data_id_index(&self, index: &mut HashMap<String, (ViewId, bool)>) {
+        let visible = self.view_conf.direct_style.builtin().display() != Display::None
+            && self.view_conf.world_bounds.area() > 0.0;
+        index.insert(self.view_conf.id_data_str.clone(), (self.id, visible));
+        if let DataType::Internal { children, .. } = &self.ty {
+            for child in children {
+                child.fill_data_id_index(index);
+            }
+        }
+    }
+}
+
+impl VirtualVector<(usize, usize, CapturedData)> for CapturedDatas {
+    fn total_len(&self) -> usize {
+        self.total()
+    }
+
+    fn slice(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> impl Iterator<Item = (usize, usize, CapturedData)> {
+        let min = range.start;
+        let max = range.end;
+        let children = self.get_children(&mut 0, min, max, 0);
+        children.into_iter()
+    }
+}
