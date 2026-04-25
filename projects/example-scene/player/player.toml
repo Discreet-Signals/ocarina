@@ -1,0 +1,10 @@
+# A player entity — its folder name is its id, this file contributes
+# the transform + name components.
+
+[name]
+value = "Player"
+
+[transform]
+position = [-2.802500009536743, -0.8870999813079834, 0.4325000047683716]
+rotation = [0.0, 0.0, 0.0]
+scale = [1.0, 1.0, 1.0]

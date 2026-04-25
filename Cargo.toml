@@ -1,0 +1,121 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "examples/hello-gameplay"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = ["Gavin <gavin@discreetsignals.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/discreetsignals/ocarina"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# --- Graphics + windowing ---
+# SPIR-V passthrough lets the wgpu backend accept pre-compiled SPIR-V
+# produced by DXC (HLSL → SPIR-V). Engine code can still author in WGSL
+# — SPIR-V is an additional input path, not the only one.
+wgpu        = { version = "29", features = ["spirv"] }
+winit       = "0.30"
+eframe      = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
+egui        = "0.34"
+egui-wgpu   = "0.34"
+egui-winit  = "0.34"
+egui_dock   = "0.19"
+
+# --- ECS / gameplay ---
+bevy_ecs    = "0.18"
+
+# --- Serialization ---
+serde       = { version = "1", features = ["derive"] }
+toml        = "1.1"
+# toml_edit is the formatting-preserving editor used for Phase 4 gizmo
+# write-back: change `position`/`rotation`/`scale` in a transform.toml
+# without disturbing comments or surrounding fields.
+toml_edit   = "0.23"
+bincode     = "2"
+
+# --- Filesystem / hot-reload ---
+notify      = "8"
+libloading  = "0.9"
+
+# --- Embedded terminal ---
+alacritty_terminal = "0.26"
+
+# --- Parsing (editor) ---
+tree-sitter = "0.26"
+
+# --- Shader compilation (HLSL → DXC → SPIR-V) ---
+hassle-rs   = "0.12"
+pollster    = "0.4"         # block-on helper for the async wgpu request_adapter
+
+# --- Windowing (standalone binaries that own their own event loop) ---
+raw-window-handle = "0.6"
+
+# --- Native file dialogs (editor "Open Project…") ---
+rfd = "0.17"
+
+# --- LSP ---
+tower-lsp   = "0.20"
+tokio       = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync"] }
+serde_json  = "1"
+
+# --- Audio ---
+# cpal, fundsp picked up in Phase 5.
+
+# --- Proc-macro plumbing ---
+syn         = { version = "2", features = ["full"] }
+quote       = "1"
+proc-macro2 = "1"
+
+# --- Component schema registration ---
+inventory   = "0.3"
+
+# --- Common utility ---
+anyhow      = "1"
+thiserror   = "2"
+bitflags    = "2"
+bytemuck    = { version = "1", features = ["derive"] }
+glam        = { version = "0.30", features = ["serde", "bytemuck"] }
+log         = "0.4"
+env_logger  = "0.11"
+
+# --- Internal crates ---
+ocarina-rhi       = { path = "crates/ocarina-rhi", version = "0.1.0" }
+ocarina-rhi-null  = { path = "crates/ocarina-rhi-null", version = "0.1.0" }
+ocarina-rhi-wgpu  = { path = "crates/ocarina-rhi-wgpu", version = "0.1.0" }
+# (already listed — kept for completeness)
+ocarina-schema    = { path = "crates/ocarina-schema", version = "0.1.0" }
+ocarina-derive    = { path = "crates/ocarina-derive", version = "0.1.0" }
+ocarina-core      = { path = "crates/ocarina-core", version = "0.1.0" }
+ocarina-runtime   = { path = "crates/ocarina-runtime", version = "0.1.0" }
+ocarina-bake      = { path = "crates/ocarina-bake", version = "0.1.0" }
+ocarina-lsp       = { path = "crates/ocarina-lsp", version = "0.1.0" }
+ocarina-shader    = { path = "crates/ocarina-shader", version = "0.1.0" }
+ocarina-scene     = { path = "crates/ocarina-scene", version = "0.1.0" }
+ocarina-gameplay-api = { path = "crates/ocarina-gameplay-api", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+
+[profile.dev]
+opt-level = 1              # mild opt so editor tools are responsive
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3              # optimize deps so wgpu/egui aren't sluggish in debug
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

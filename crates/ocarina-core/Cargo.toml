@@ -1,0 +1,17 @@
+[package]
+name = "ocarina-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core math, built-in components, and the Ocarina prelude."
+
+[dependencies]
+bevy_ecs.workspace = true
+glam.workspace = true
+serde.workspace = true
+ocarina-derive.workspace = true
+ocarina-schema.workspace = true
+
+[lints]
+workspace = true

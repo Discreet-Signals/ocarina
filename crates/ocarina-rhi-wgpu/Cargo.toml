@@ -1,0 +1,27 @@
+[package]
+name = "ocarina-rhi-wgpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "wgpu-backed RHI backend. Targets Vulkan / Metal / DX12 native via wgpu."
+
+[dependencies]
+ocarina-rhi.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+thiserror.workspace = true
+pollster.workspace = true
+raw-window-handle.workspace = true
+
+[dev-dependencies]
+winit.workspace = true
+env_logger.workspace = true
+
+[[example]]
+name = "standalone_triangle"
+path = "examples/standalone_triangle.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "ocarina-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "`ocarina` command: scaffolding, bake, build, lsp. Lightweight, fast-startup CLI."
+
+[[bin]]
+name = "ocarina"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+ocarina-schema.workspace = true
+ocarina-core.workspace = true
+ocarina-lsp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

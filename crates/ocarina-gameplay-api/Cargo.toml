@@ -1,0 +1,14 @@
+[package]
+name = "ocarina-gameplay-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Stable FFI contract between the Ocarina editor/runtime and hot-reloadable gameplay dylibs."
+
+[dependencies]
+# Deliberately kept at zero — the ABI must not pull in heavy types
+# whose layout can change across rustc patch versions.
+
+[lints]
+workspace = true

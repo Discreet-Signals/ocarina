@@ -1,0 +1,13 @@
+[package]
+name = "ocarina-rhi-null"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Null RHI backend: no-op implementation for tests and anti-leak guardrails."
+
+[dependencies]
+ocarina-rhi.workspace = true
+
+[lints]
+workspace = true

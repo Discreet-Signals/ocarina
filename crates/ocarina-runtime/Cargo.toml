@@ -1,0 +1,16 @@
+[package]
+name = "ocarina-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shippable runtime engine: asset archive loader + ECS tick + render + audio. Must NOT depend on editor crates."
+
+[dependencies]
+ocarina-rhi.workspace = true
+ocarina-core.workspace = true
+bevy_ecs.workspace = true
+bincode.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+# The cave entity demonstrates multi-component authoring in one file.
+
+[name]
+value = "Cave"
+
+[transform]
+position = [10.0, 0.0, -5.0]
+rotation = [0.0, 45.0, 0.0]
+
+[basic_mesh]
+source = "meshes/cave.obj"
+tint = [0.55, 0.50, 0.45, 1.0]
