@@ -1,0 +1,13 @@
+# Cargo aliases for Ocarina.
+#
+# `cargo editor`     — build + run the Lapce-based editor (debug)
+# `cargo editor-rel` — build + run the Lapce-based editor (release)
+# `cargo build-editor` — build only, no run
+#
+# These delegate into `third_party/lapce/`'s workspace because the
+# Lapce fork lives there as a git subtree with its own Cargo.toml.
+
+[alias]
+editor       = "run --manifest-path third_party/lapce/Cargo.toml -p lapce -- projects/example-scene"
+editor-rel   = "run --manifest-path third_party/lapce/Cargo.toml -p lapce --release -- projects/example-scene"
+build-editor = "build --manifest-path third_party/lapce/Cargo.toml -p lapce"
