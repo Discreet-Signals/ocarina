@@ -34,6 +34,7 @@ use crate::{
         call_hierarchy_view::show_hierarchy_panel, document_symbol::symbol_panel,
         implementation_view::implementation_panel,
         references_view::references_panel,
+        viewport_view::viewport_panel,
     },
     window_tab::{DragContent, WindowTabData},
 };
@@ -507,6 +508,9 @@ fn panel_view(
                     implementation_panel(window_tab_data.clone(), position)
                         .into_any()
                 }
+                PanelKind::Viewport => {
+                    viewport_panel(window_tab_data.clone(), position).into_any()
+                }
             };
             view.style(|s| s.size_pct(100.0, 100.0))
         },
@@ -563,6 +567,7 @@ fn panel_picker(
                 PanelKind::DocumentSymbol => "Document Symbol",
                 PanelKind::References => "References",
                 PanelKind::Implementation => "Implementation",
+                PanelKind::Viewport => "Viewport",
             };
             let icon = p.svg_name();
             let is_active = {

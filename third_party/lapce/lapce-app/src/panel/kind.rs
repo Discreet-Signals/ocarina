@@ -19,6 +19,9 @@ pub enum PanelKind {
     DocumentSymbol,
     References,
     Implementation,
+    /// Ocarina 3D viewport — renders the live ECS scene through the
+    /// shared wgpu device.
+    Viewport,
 }
 
 impl PanelKind {
@@ -35,6 +38,7 @@ impl PanelKind {
             PanelKind::DocumentSymbol => LapceIcons::DOCUMENT_SYMBOL,
             PanelKind::References => LapceIcons::REFERENCES,
             PanelKind::Implementation => LapceIcons::IMPLEMENTATION,
+            PanelKind::Viewport => LapceIcons::START,
         }
     }
 
@@ -50,7 +54,8 @@ impl PanelKind {
 
     pub fn default_position(&self) -> PanelPosition {
         match self {
-            PanelKind::Terminal => PanelPosition::BottomLeft,
+            // Terminal moves to the right side per Ocarina default layout.
+            PanelKind::Terminal => PanelPosition::RightTop,
             PanelKind::FileExplorer => PanelPosition::LeftTop,
             PanelKind::SourceControl => PanelPosition::LeftTop,
             PanelKind::Plugin => PanelPosition::LeftTop,
@@ -61,6 +66,8 @@ impl PanelKind {
             PanelKind::DocumentSymbol => PanelPosition::RightTop,
             PanelKind::References => PanelPosition::BottomLeft,
             PanelKind::Implementation => PanelPosition::BottomLeft,
+            // Viewport sits in the bottom area as a wide 3D scene panel.
+            PanelKind::Viewport => PanelPosition::BottomLeft,
         }
     }
 }

@@ -31,10 +31,12 @@ pub fn default_panel_order() -> PanelOrder {
             PanelKind::Debug,
         ],
     );
+    // Ocarina default: viewport occupies the wide bottom area; terminal
+    // moves to the right column.
     order.insert(
         PanelPosition::BottomLeft,
         im::vector![
-            PanelKind::Terminal,
+            PanelKind::Viewport,
             PanelKind::Search,
             PanelKind::Problem,
             PanelKind::CallHierarchy,
@@ -44,7 +46,7 @@ pub fn default_panel_order() -> PanelOrder {
     );
     order.insert(
         PanelPosition::RightTop,
-        im::vector![PanelKind::DocumentSymbol,],
+        im::vector![PanelKind::Terminal, PanelKind::DocumentSymbol,],
     );
 
     order
