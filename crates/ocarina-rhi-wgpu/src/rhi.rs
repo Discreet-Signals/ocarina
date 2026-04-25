@@ -141,7 +141,7 @@ impl WgpuRhi {
             + Sync
             + 'static,
     {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = wgpu::Instance::default();
         let surface: wgpu::Surface<'static> = instance
             .create_surface(std::sync::Arc::clone(&window))
             .map_err(|e| RhiError::InitFailed(format!("create_surface: {e}")))?;
@@ -460,7 +460,7 @@ impl Rhi for WgpuRhi {
 
     fn create_pipeline(&mut self, desc: &PipelineDesc<'_>) -> RhiResult<PipelineHandle> {
         // Resolve bind group layouts.
-        let bg_layouts: Vec<Option<&wgpu::BindGroupLayout>> = desc
+        let bg_layouts: Vec<&wgpu::BindGroupLayout> = desc
             .bind_group_layouts
             .iter()
             .map(|h| {
@@ -468,27 +468,26 @@ impl Rhi for WgpuRhi {
                     .bgls
                     .get(h.raw().slot, h.raw().generation)
                     .ok_or(RhiError::InvalidHandle("BindGroupLayoutHandle"))
-                    .map(Some)
             })
             .collect::<Result<_, _>>()?;
 
-        // wgpu 29 represents push constants as a single byte-sized "immediate"
-        // range shared by all stages. Compute the union size from our per-stage
-        // ranges; backends with per-stage granularity (VK/D3D12) can honor the
-        // original ranges when they land.
-        let immediate_size: u32 = desc
+        // wgpu 27 takes per-stage push constant ranges directly. Future
+        // native backends (VK/D3D12) honour the same per-stage granularity.
+        let push_constant_ranges: Vec<wgpu::PushConstantRange> = desc
             .push_constant_ranges
             .iter()
-            .map(|r| r.offset + r.size)
-            .max()
-            .unwrap_or(0);
+            .map(|r| wgpu::PushConstantRange {
+                stages: cv::shader_stages(r.stages),
+                range: r.offset..(r.offset + r.size),
+            })
+            .collect();
 
         let layout = self
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: desc.label,
                 bind_group_layouts: &bg_layouts,
-                immediate_size,
+                push_constant_ranges: &push_constant_ranges,
             });
 
         match desc.kind {
@@ -591,8 +590,8 @@ impl Rhi for WgpuRhi {
 
                 let depth_stencil = g.depth_stencil.map(|d| wgpu::DepthStencilState {
                     format: cv::texture_format(d.format),
-                    depth_write_enabled: Some(d.depth_write_enabled),
-                    depth_compare: Some(cv::compare_function(d.depth_compare)),
+                    depth_write_enabled: d.depth_write_enabled,
+                    depth_compare: cv::compare_function(d.depth_compare),
                     stencil: wgpu::StencilState {
                         front: wgpu::StencilFaceState {
                             compare: d
@@ -644,7 +643,7 @@ impl Rhi for WgpuRhi {
                         depth_stencil,
                         multisample,
                         fragment,
-                        multiview_mask: None,
+                        multiview: None,
                         cache: None,
                     },
                 );
@@ -807,25 +806,26 @@ impl Rhi for WgpuRhi {
         }
 
         let surface_tex = match sc.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated => {
+            // wgpu 27 returns Ok even when the surface is suboptimal —
+            // a `suboptimal: bool` is set on the SurfaceTexture itself.
+            // Caller can choose to reconfigure on suboptimal next frame.
+            Ok(t) => t,
+            Err(wgpu::SurfaceError::Outdated) => {
                 // Surface is out of date — caller should resize + retry.
                 // Reconfigure eagerly so the next acquire works.
                 sc.surface.configure(&self.device, &sc.config);
                 return Err(RhiError::SurfaceLost);
             }
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Validation => {
+            Err(wgpu::SurfaceError::Lost) => {
                 return Err(RhiError::SurfaceLost);
             }
-            wgpu::CurrentSurfaceTexture::Timeout => {
+            Err(wgpu::SurfaceError::Timeout) => {
                 return Err(RhiError::SwapchainAcquireFailed(
                     "get_current_texture timed out".into(),
                 ));
             }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                // Window minimized/hidden — treat as a transient skip.
-                return Err(RhiError::SwapchainAcquireFailed("surface occluded".into()));
+            Err(e) => {
+                return Err(RhiError::SwapchainAcquireFailed(e.to_string()));
             }
         };
 

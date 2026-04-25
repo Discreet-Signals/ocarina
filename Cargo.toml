@@ -4,7 +4,12 @@ members = ["crates/*", "examples/hello-gameplay"]
 # Lapce + Floem live under third_party/ as git subtrees with their own
 # workspaces. Exclude so `cargo check --workspace` here doesn't pull
 # them in; build them via their own root Cargo.toml.
-exclude = ["third_party/lapce", "third_party/floem"]
+#
+# ocarina-editor is the legacy egui-based editor. Excluded during the
+# Lapce migration: egui 0.34 pulls wgpu 29, but Floem (and therefore
+# our shared RHI seam) requires wgpu 27. The editor will be deleted
+# once the Lapce-based editor reaches parity.
+exclude = ["third_party/lapce", "third_party/floem", "crates/ocarina-editor"]
 
 [workspace.package]
 edition = "2024"
@@ -16,16 +21,15 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # --- Graphics + windowing ---
+# wgpu pinned to the version Floem ships with so our RHI shares a
+# `wgpu::Device` cleanly with Floem's renderer for in-pane viewport
+# compositing. Bumped lockstep with Floem when they upgrade.
+#
 # SPIR-V passthrough lets the wgpu backend accept pre-compiled SPIR-V
 # produced by DXC (HLSL → SPIR-V). Engine code can still author in WGSL
 # — SPIR-V is an additional input path, not the only one.
-wgpu        = { version = "29", features = ["spirv"] }
+wgpu        = { version = "27.0", features = ["spirv"] }
 winit       = "0.30"
-eframe      = { version = "0.34", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
-egui        = "0.34"
-egui-wgpu   = "0.34"
-egui-winit  = "0.34"
-egui_dock   = "0.19"
 
 # --- ECS / gameplay ---
 bevy_ecs    = "0.18"

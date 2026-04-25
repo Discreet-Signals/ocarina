@@ -58,7 +58,7 @@ fn features_from(f: wgpu::Features) -> Features {
     if f.contains(wgpu::Features::SHADER_F64) {
         out |= Features::SHADER_F64;
     }
-    if f.contains(wgpu::Features::IMMEDIATES) {
+    if f.contains(wgpu::Features::PUSH_CONSTANTS) {
         out |= Features::PUSH_CONSTANTS;
     }
     if f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
@@ -93,12 +93,12 @@ fn limits_from(l: &wgpu::Limits) -> Limits {
         max_storage_buffers_per_shader_stage: l.max_storage_buffers_per_shader_stage,
         max_storage_textures_per_shader_stage: l.max_storage_textures_per_shader_stage,
         max_uniform_buffers_per_shader_stage: l.max_uniform_buffers_per_shader_stage,
-        max_uniform_buffer_binding_size: l.max_uniform_buffer_binding_size,
-        max_storage_buffer_binding_size: l.max_storage_buffer_binding_size,
+        max_uniform_buffer_binding_size: u64::from(l.max_uniform_buffer_binding_size),
+        max_storage_buffer_binding_size: u64::from(l.max_storage_buffer_binding_size),
         max_vertex_buffers: l.max_vertex_buffers,
         max_vertex_attributes: l.max_vertex_attributes,
         max_vertex_buffer_array_stride: l.max_vertex_buffer_array_stride,
-        max_push_constant_size: l.max_immediate_size,
+        max_push_constant_size: l.max_push_constant_size,
         max_color_attachments: l.max_color_attachments,
         max_compute_workgroup_size_x: l.max_compute_workgroup_size_x,
         max_compute_workgroup_size_y: l.max_compute_workgroup_size_y,

@@ -230,10 +230,10 @@ pub fn filter_mode(f: rhi::FilterMode) -> wgpu::FilterMode {
     }
 }
 
-pub fn mipmap_filter(f: rhi::FilterMode) -> wgpu::MipmapFilterMode {
+pub fn mipmap_filter(f: rhi::FilterMode) -> wgpu::FilterMode {
     match f {
-        rhi::FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
-        rhi::FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
+        rhi::FilterMode::Nearest => wgpu::FilterMode::Nearest,
+        rhi::FilterMode::Linear => wgpu::FilterMode::Linear,
     }
 }
 

@@ -274,7 +274,6 @@ fn run_render_pass(
         depth_stencil_attachment: depth_att,
         timestamp_writes: None,
         occlusion_query_set: None,
-        multiview_mask: None,
     });
 
     let mut i = start;
@@ -341,13 +340,11 @@ fn run_render_pass(
                 pass.set_bind_group(*index, bg, dynamic_offsets);
             }
             Command::SetPushConstants {
-                stages: _,
+                stages,
                 offset,
                 data,
             } => {
-                // wgpu 29 no longer takes stage visibility on the render pass
-                // path; immediates are a single block shared by all stages.
-                pass.set_immediates(*offset, data);
+                pass.set_push_constants(cv::shader_stages(*stages), *offset, data);
             }
             Command::SetViewport(v) => {
                 pass.set_viewport(v.x, v.y, v.width, v.height, v.min_depth, v.max_depth);
@@ -455,7 +452,7 @@ fn run_compute_pass(
                 pass.set_bind_group(*index, bg, dynamic_offsets);
             }
             Command::SetPushConstants { offset, data, .. } => {
-                pass.set_immediates(*offset, data);
+                pass.set_push_constants(*offset, data);
             }
             Command::Dispatch { x, y, z } => pass.dispatch_workgroups(*x, *y, *z),
             Command::DispatchIndirect { buffer, offset } => {
