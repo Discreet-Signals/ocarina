@@ -1,0 +1,22 @@
+[package]
+name = "floem-editor-core"
+version.workspace = true
+edition.workspace = true
+repository = "https://github.com/lapce/floem"
+license.workspace = true
+description = "The core of the floem text editor"
+
+[dependencies]
+serde = { workspace = true, optional = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+ui-events.workspace = true
+
+lapce-xi-rope = { workspace = true }
+
+itertools = "0.14.0"
+bitflags = "2.4.2"
+memchr = "2.7.1"
+
+[features]
+serde = ["dep:serde"]

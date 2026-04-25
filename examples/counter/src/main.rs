@@ -1,0 +1,80 @@
+use floem::{action::inspect, prelude::*, unit::UnitExt};
+
+fn app_view() -> impl IntoView {
+    let counter = RwSignal::new(0);
+    (
+        dyn_view(move || format!("Value: {}", counter.get())),
+        counter.style(|s| s.padding(10.0)),
+        (
+            "Increment"
+                .style(|s| {
+                    s.border_radius(10.0)
+                        .padding(10.0)
+                        .background(palette::css::WHITE)
+                        .box_shadow_blur(5.0)
+                        .keyboard_navigable()
+                        .focus_visible(|s| s.outline(2.).outline_color(palette::css::BLUE))
+                        .hover(|s| s.background(palette::css::LIGHT_GREEN))
+                        .active(|s| {
+                            s.color(palette::css::WHITE)
+                                .background(palette::css::DARK_GREEN)
+                        })
+                })
+                .action(move || {
+                    counter.update(|value| *value += 1);
+                }),
+            "Decrement"
+                .action(move || {
+                    counter.update(|value| *value -= 1);
+                })
+                .style(|s| {
+                    s.box_shadow_blur(5.0)
+                        .background(palette::css::WHITE)
+                        .border_radius(10.0)
+                        .padding(10.0)
+                        .margin_left(10.0)
+                        .keyboard_navigable()
+                        .focus_visible(|s| s.outline(2.).outline_color(palette::css::BLUE))
+                        .hover(|s| s.background(Color::from_rgb8(244, 67, 54)))
+                        .active(|s| s.color(palette::css::WHITE).background(palette::css::RED))
+                }),
+            "Reset to 0"
+                .action(move || {
+                    println!("Reset counter pressed"); // will not fire if button is disabled
+                    counter.update(|value| *value = 0);
+                })
+                .style(move |s| {
+                    s.box_shadow_blur(5.0)
+                        .border_radius(10.0)
+                        .padding(10.0)
+                        .margin_left(10.0)
+                        .background(palette::css::LIGHT_BLUE)
+                        .keyboard_navigable()
+                        .focus_visible(|s| s.outline(2.).outline_color(palette::css::BLUE))
+                        .set_disabled(counter.get() == 0)
+                        .disabled(|s| s.background(palette::css::LIGHT_GRAY))
+                        .hover(|s| s.background(palette::css::LIGHT_YELLOW))
+                        .active(|s| {
+                            s.color(palette::css::WHITE)
+                                .background(palette::css::YELLOW_GREEN)
+                        })
+                }),
+        )
+            .style(|s| s.custom_style_class(|s: LabelCustomStyle| s.selectable(false))),
+    )
+        .style(|s| {
+            s.size(100.pct(), 100.pct())
+                .flex_col()
+                .items_center()
+                .justify_center()
+        })
+        .on_event_stop(el::KeyUp, |_, KeyboardEvent { key, .. }| {
+            if *key == Key::Named(NamedKey::F11) {
+                inspect();
+            }
+        })
+}
+
+fn main() {
+    floem::launch(app_view);
+}

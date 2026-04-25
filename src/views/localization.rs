@@ -1,0 +1,570 @@
+#![deny(missing_docs)]
+//! Localization privitives.
+use std::borrow::Cow;
+use std::rc::Rc;
+
+use crate::style::{CustomStylable, CustomStyle, Style, StylePropValue};
+use crate::views::Decorators;
+use crate::{AnyView, IntoView, View, ViewId, prop, prop_extractor, style_class};
+use floem_reactive::UpdaterEffect;
+use fluent_bundle::{FluentBundle, FluentResource};
+use ouroboros::self_referencing;
+use parley::Alignment;
+
+pub use fluent_bundle::FluentArgs;
+pub use fluent_bundle::types::FluentValue;
+pub use unic_langid::LanguageIdentifier;
+
+use super::Label;
+
+/// A map that stores localizations.
+#[derive(Clone)]
+pub struct LocaleMap(pub imbl::HashMap<LanguageIdentifier, Rc<FluentBundle<FluentResource>>>);
+
+impl std::ops::Deref for LocaleMap {
+    type Target = imbl::HashMap<LanguageIdentifier, Rc<FluentBundle<FluentResource>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for LocaleMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl std::fmt::Debug for LocaleMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(self.0.keys().map(|lang_id| (lang_id, "<FluentBundle>")))
+            .finish()
+    }
+}
+
+impl PartialEq for LocaleMap {
+    fn eq(&self, other: &Self) -> bool {
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+
+        self.0.keys().all(|key| {
+            other.0.contains_key(key)
+                && Rc::ptr_eq(self.0.get(key).unwrap(), other.0.get(key).unwrap())
+        })
+    }
+}
+
+impl StylePropValue for LocaleMap {
+    fn debug_view(&self) -> Option<AnyView> {
+        use crate::prelude::*;
+
+        let languages: Vec<String> = self.0.keys().map(|lang_id| lang_id.to_string()).collect();
+
+        let count = languages.len();
+
+        let view = Stack::new((
+            format!("Languages ({count})").style(|s| {
+                s.font_size(12.0)
+                    .font_weight(floem_renderer::text::FontWeight::SEMI_BOLD)
+            }),
+            Stack::vertical_from_iter(languages.into_iter().map(|lang| {
+                lang.style(|s| {
+                    s.font_size(11.0)
+                        .color(Color::WHITE.with_alpha(0.7))
+                        .width_full()
+                        .items_center()
+                        .justify_center()
+                        .text_align(Alignment::Center)
+                })
+            }))
+            .style(|s| s.gap(2.0).width_full()),
+        ))
+        .style(|s| {
+            s.flex_row()
+                .gap(8.0)
+                .items_center()
+                .padding(8.0)
+                .border(1.)
+                .border_color(palette::css::WHITE.with_alpha(0.3))
+                .border_radius(6.0)
+                .min_width(120.0)
+        });
+
+        Some(view.into_any())
+    }
+}
+
+impl StylePropValue for LanguageIdentifier {
+    fn debug_view(&self) -> Option<Box<dyn View>> {
+        Some(crate::views::Label::new(format!("{self:?}")).into_any())
+    }
+
+    fn interpolate(&self, _other: &Self, _value: f64) -> Option<Self> {
+        None
+    }
+}
+
+impl LocaleMap {
+    /// Accepts list of the language resources in a form of a list implementing [IntoIterator]
+    /// containing tuple of (<language_name>, <localization_file>) string slices.
+    /// ### Example
+    /// ```rust
+    /// # use floem::views::localization::LocaleMap;
+    /// let locales = LocaleMap::from_resources([
+    ///     ("en-US", include_str!("../../examples/localization/locales/en-US/app.ftl")),
+    ///     ("pl-PL", include_str!("../../examples/localization/locales/pl-PL/app.ftl"))
+    /// ]);
+    /// ```
+    pub fn from_resources<'a, I>(resources: I) -> Result<Self, Box<dyn std::error::Error>>
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        let mut map = imbl::HashMap::new();
+        for (lang_id, resource_str) in resources {
+            let lang_id = lang_id.parse::<LanguageIdentifier>()?;
+            let resource = FluentResource::try_new(resource_str.to_string())
+                .map_err(|(_, errs)| format!("Failed to parse Fluent resource: {:?}", errs))?;
+
+            let mut bundle = FluentBundle::new(vec![lang_id.clone()]);
+            bundle
+                .add_resource(resource)
+                .map_err(|errs| format!("Failed to add resource to bundle: {:?}", errs))?;
+
+            map.insert(lang_id, Rc::new(bundle));
+        }
+
+        Ok(Self(map))
+    }
+
+    /// Find a language bundle that matches the given locale.
+    /// First, it tries exact match, then falls back to matching only the language component.
+    fn find_bundle(
+        &self,
+        locale: &LanguageIdentifier,
+    ) -> Option<&Rc<FluentBundle<FluentResource>>> {
+        self.0.get(locale).or_else(|| {
+            self.0.iter().find_map(|(key, resource)| {
+                if key.language == locale.language {
+                    Some(resource)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+}
+
+prop!(pub L10nLocale: Option<LanguageIdentifier> { inherited } = sys_locale::get_locale().and_then(|l| l.parse().ok()));
+prop!(pub L10nFallback: Option<String> {} = None);
+prop!(pub L10nBundle: LocaleMap { inherited } = LocaleMap(imbl::HashMap::new()));
+
+prop_extractor! {
+    LanguageExtractor {
+        locale: L10nLocale,
+        bundle: L10nBundle,
+    }
+}
+
+prop_extractor! {
+    FallBackExtractor {
+        fallback: L10nFallback,
+    }
+}
+
+style_class!(
+    /// A localization class.
+    pub L10nClass
+);
+
+/// An enum for the locatization state updates.
+pub enum L10nState {
+    /// Add an argument(a variable) for the locatization label:
+    /// ### Example:
+    /// `msg-key = Hello, { $user }. You have { $emailCount } messages.`
+    /// `$user` and `$emailCount` are the arguments, which can be filled with values.
+    Arg(usize, FluentValue<'static>),
+    /// Add a fallback label that will be displayed for the
+    /// localized label when translation will be unavailable.
+    Fallback(String),
+}
+
+#[self_referencing]
+struct L10nArgs {
+    arg_keys: Vec<String>,
+    arg_values: Vec<FluentValue<'static>>,
+    #[borrows(arg_keys)]
+    #[covariant]
+    args: FluentArgs<'this>,
+}
+
+impl L10nArgs {
+    fn empty() -> Self {
+        L10nArgsBuilder {
+            arg_keys: Vec::new(),
+            arg_values: Vec::new(),
+            args_builder: |_| FluentArgs::new(),
+        }
+        .build()
+    }
+
+    fn from_parts(arg_keys: Vec<String>, arg_values: Vec<FluentValue<'static>>) -> Self {
+        let values_for_args = arg_values.clone();
+        L10nArgsBuilder {
+            arg_keys,
+            arg_values,
+            args_builder: move |arg_keys| {
+                let mut args = FluentArgs::with_capacity(values_for_args.len());
+                for (key, value) in arg_keys.iter().zip(values_for_args.iter().cloned()) {
+                    args.set(Cow::Borrowed(key.as_str()), value);
+                }
+                args
+            },
+        }
+        .build()
+    }
+
+    fn len(&self) -> usize {
+        self.borrow_arg_keys().len()
+    }
+
+    fn insert(self, arg_key: String, arg_val: FluentValue<'static>) -> Self {
+        let mut heads = self.into_heads();
+        heads.arg_keys.push(arg_key);
+        heads.arg_values.push(arg_val);
+        Self::from_parts(heads.arg_keys, heads.arg_values)
+    }
+
+    fn set(&mut self, offset: usize, arg_val: FluentValue<'static>) {
+        self.with_arg_values_mut(|values| values[offset] = arg_val.clone());
+        self.with_mut(|fields| {
+            let key = fields.arg_keys[offset].as_str();
+            fields.args.set(Cow::Borrowed(key), arg_val);
+        });
+    }
+}
+
+/// A localization primitive that stores localized message data and state.
+pub struct L10n {
+    id: ViewId,
+    label_id: ViewId,
+    key: String,
+    args: L10nArgs,
+    locale: LanguageExtractor,
+    fallback: FallBackExtractor,
+    fallback_override: Option<String>,
+    has_format_value: bool,
+}
+
+impl L10n {
+    /// Constructs new localized label with the key.
+    pub fn new(key: impl Into<String>) -> Self {
+        let key: String = key.into();
+        let label = Label::new(key.clone());
+        let label_id = label.id();
+        let id = ViewId::new();
+        id.add_child(label.into_any());
+        Self {
+            id,
+            label_id,
+            key,
+            args: L10nArgs::empty(),
+            locale: Default::default(),
+            fallback: Default::default(),
+            fallback_override: None,
+            has_format_value: false,
+        }
+        .class(L10nClass)
+    }
+
+    /// Add an argument to the label. It can contain static label or signal, that will
+    /// reactively update the value.
+    /// ### Example
+    /// ```rust
+    /// # use floem::prelude::{RwSignal, SignalGet};
+    /// # use floem::views::localization::l10n;
+    ///
+    /// let username = RwSignal::new("John");
+    /// let localized_label = l10n("Hello").arg("user", move || username.get());
+    /// ```
+    /// ### Reactivity
+    /// This function will reactively update its value on the signal change.
+    pub fn arg<FV: Into<FluentValue<'static>>>(
+        mut self,
+        arg_key: impl Into<String>,
+        arg_val: impl Fn() -> FV + 'static,
+    ) -> Self {
+        let id = self.id;
+        let arg_key = arg_key.into();
+        let offset = self.args.len();
+
+        let initial_val = UpdaterEffect::new(
+            move || arg_val().into(),
+            move |arg_val: FluentValue<'static>| {
+                id.update_state(L10nState::Arg(offset, arg_val));
+            },
+        );
+        self.args = self.args.insert(arg_key, initial_val);
+        self
+    }
+
+    /// Adds fallback label, that going to be used in case the translation will fail or will
+    /// be missing.
+    /// ### Example
+    /// ```rust
+    /// # use floem::prelude::{RwSignal, SignalGet};
+    /// # use floem::views::localization::l10n;
+    /// let localized_with_fallback = l10n("greet").fallback(|| "Hello user!");
+    /// let username = RwSignal::new("John");
+    /// let localized_with_fallback_and_args = l10n("greet")
+    ///     .arg("user", move || username.get())
+    ///     .fallback(|| "Hello user!");
+    /// ```
+    /// ### Info
+    /// This fallback takes precendence over any fallback from `Style`.
+    /// ### Reactivity
+    /// This function will reactively update its value on the signal change.
+    pub fn fallback<S: Into<String>>(mut self, fallback: impl Fn() -> S + 'static) -> Self {
+        let id = self.id;
+        let initial_fallback = UpdaterEffect::new(
+            move || fallback().into(),
+            move |fallback| {
+                id.update_state(L10nState::Fallback(fallback));
+            },
+        );
+        self.fallback_override = Some(initial_fallback);
+        self
+    }
+
+    fn try_format_message(&self) -> Option<String> {
+        let bundle = self.locale.bundle();
+        let locale = self.locale.locale()?;
+        let resource = bundle.find_bundle(&locale)?;
+        let message = resource.get_message(&self.key)?;
+        let pattern = message.value()?;
+        let errors = &mut vec![];
+        self.args.with_args(|args| {
+            let value = resource.format_pattern(pattern, Some(args), errors);
+            if errors.is_empty() {
+                Some(value.to_string())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn apply_fallback(&self) -> bool {
+        if let Some(fallback) = &self.fallback_override {
+            self.label_id.update_state(fallback.to_string());
+            true
+        } else if let Some(fallback) = self.fallback.fallback() {
+            self.label_id.update_state(fallback.to_string());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Construct localized label with the message key.
+///
+/// ### Example
+/// ```rust
+/// # use floem::prelude::*;
+/// # use floem::views::localization::*;
+/// // Simple label:
+/// let simple = l10n("greet");
+/// // With arg (variables):
+/// let user = RwSignal::new("John");
+/// let with_args = l10n("greet").arg("user", move || user.get());
+/// // With fallback label:
+/// let with_fallback = l10n("greet").fallback(|| "Hello user!");
+///
+/// // Full localization example:
+/// let locales = LocaleMap::from_resources([
+///     ("en-US", include_str!("../../examples/localization/locales/en-US/app.ftl")),
+///     ("pl-PL", include_str!("../../examples/localization/locales/pl-PL/app.ftl"))
+/// ]).unwrap();
+/// let active_language = RwSignal::new(None);
+/// let mut counter = RwSignal::new(0);
+///
+/// let language_selectors = h_stack((
+///  // Static string slice implement [IntoView].
+///  "System Default"
+///     .class(TabSelectorClass)
+///     .style(move |s| s.apply_if(active_language.get().is_none(), |s| s.set_selected(true)))
+///     .action(move || active_language.set(None)),
+///     "pl-PL"
+///         .class(TabSelectorClass)
+///         .style(move |s| {
+///             s.apply_opt(active_language.get(), |s, l| {
+///                 s.apply_if(l == "pl-PL", |s| s.set_selected(true))
+///             })
+///         })
+///         .action(move || active_language.set(Some("pl-PL"))),
+///     "en-US"
+///         .class(TabSelectorClass)
+///         .style(move |s| {
+///             s.apply_opt(active_language.get(), |s, l| {
+///                 s.apply_if(l == "en-US", |s| s.set_selected(true))
+///             })
+///         })
+///         .action(move || active_language.set(Some("en-US"))),
+/// ));
+///
+/// let value_controls = h_stack((
+///     // Construct localized label
+///     l10n("inc")
+///         // Add fllback string
+///         .fallback(|| "increment")
+///         // Make it a button
+///         .button()
+///         // Add action on click
+///         .action(move || counter += 1),
+///     l10n("val")
+///         // Fallback label will be dependent on a variable value
+///         .fallback(move || format!("{counter}"))
+///         // Add variable `counter` as an argument to `val` label
+///         .arg("counter", move || counter.get()),
+///     l10n("dec")
+///         .fallback(|| "decrement")
+///         .button()
+///         .action(move || counter -= 1),
+/// ));
+/// let view = (language_selectors, value_controls)
+///         .v_stack()
+///         .style(move |s| s
+///             .size_full()
+///             .items_center()
+///             .justify_center()
+///             // Set up locales for the app providing it in the root view styles
+///             .custom(|ls: L10nCustomStyle| {
+///                 // Add language bundle(s)
+///                 ls.bundle(locales.clone())
+///                     // Apply language provided from the reactive signal and fallback to
+///                     // default on `None`
+///                     .apply_opt(active_language.get(), |ls, locale| {
+///                         ls.locale(locale.parse::<LanguageIdentifier>().unwrap())
+///                     })
+///             })
+///         );
+/// ```
+/// ### Info
+/// Label is not reactive, to make it behave on signal change, use arguments
+/// as described in fluent [specification](https://projectfluent.org/fluent/guide/variables.html).
+pub fn l10n(label_key: impl Into<String>) -> L10n {
+    L10n::new(label_key)
+}
+
+impl View for L10n {
+    fn id(&self) -> ViewId {
+        self.id
+    }
+
+    fn style_pass(&mut self, cx: &mut crate::context::StyleCx<'_>) {
+        if self.locale.read(cx) {
+            self.has_format_value = false;
+        }
+        if !self.has_format_value
+            && let Some(formatted) = self.try_format_message()
+        {
+            self.label_id.update_state(formatted);
+            self.has_format_value = true;
+        }
+        self.fallback.read(cx);
+        if !self.has_format_value && !self.apply_fallback() {
+            self.label_id.update_state(self.key.clone());
+        }
+    }
+
+    fn update(&mut self, _cx: &mut crate::context::UpdateCx, state: Box<dyn std::any::Any>) {
+        if let Ok(inner) = state.downcast::<L10nState>() {
+            match *inner {
+                L10nState::Arg(stack_offset, fluent_value) => {
+                    self.has_format_value = false;
+                    self.args.set(stack_offset, fluent_value);
+
+                    if let Some(formatted) = self.try_format_message() {
+                        self.label_id.update_state(formatted);
+                        self.has_format_value = true;
+                    }
+
+                    if !self.has_format_value && !self.apply_fallback() {
+                        self.label_id.update_state(self.key.clone());
+                    }
+                }
+                L10nState::Fallback(fallback_override) => {
+                    self.fallback_override = Some(fallback_override);
+                    if !self.has_format_value {
+                        self.label_id
+                            .update_state(self.fallback_override.clone().unwrap());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Represents a custom style for the [L10n].
+#[derive(Debug, Clone)]
+pub struct L10nCustomStyle(Style);
+
+impl From<L10nCustomStyle> for Style {
+    fn from(value: L10nCustomStyle) -> Self {
+        value.0
+    }
+}
+
+impl From<Style> for L10nCustomStyle {
+    fn from(value: Style) -> Self {
+        Self(value)
+    }
+}
+
+impl CustomStyle for L10nCustomStyle {
+    type StyleClass = L10nClass;
+}
+
+impl CustomStylable<L10nCustomStyle> for L10n {
+    type DV = Self;
+}
+
+impl L10nCustomStyle {
+    /// Construct new custom [Style] for the [L10n].
+    pub fn new() -> Self {
+        Self(Style::new())
+    }
+
+    /// Override default locale with provided one.
+    pub fn locale(mut self, locale_key: impl Into<LanguageIdentifier>) -> Self {
+        let locale = locale_key.into();
+        self = Self(self.0.set(L10nLocale, Some(locale)));
+        self
+    }
+
+    /// Provide fallback label, that going to be used in case
+    /// the translation will fail.
+    pub fn fallback(mut self, fallback: impl Into<String>) -> Self {
+        let string = fallback.into();
+        self = Self(self.0.set(L10nFallback, Some(string)));
+        self
+    }
+
+    /// Apply styles optionally.
+    pub fn apply_opt<T>(self, opt: Option<T>, f: impl FnOnce(Self, T) -> Self) -> Self {
+        if let Some(t) = opt { f(self, t) } else { self }
+    }
+
+    /// Provide localization bundle(s).
+    pub fn bundle(mut self, bundle: impl Into<LocaleMap>) -> Self {
+        self = Self(self.0.set(L10nBundle, bundle));
+        self
+    }
+}
+
+impl Default for L10nCustomStyle {
+    fn default() -> Self {
+        Self::new()
+    }
+}

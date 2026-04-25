@@ -1,0 +1,225 @@
+[workspace]
+resolver = "3"
+members = [
+  "renderer",
+  "skia",
+  "vello",
+  "vger",
+  "tiny_skia",
+  "reactive",
+  "editor-core",
+  "examples/*",
+  "ui-events-winit",
+  "test",
+]
+default-members = [
+  ".",
+  "renderer",
+  "skia",
+  "vello",
+  "vger",
+  "tiny_skia",
+  "reactive",
+  "editor-core",
+  "ui-events-winit",
+  "test",
+]
+
+[workspace.package]
+license = "MIT"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.91"
+repository = "https://github.com/lapce/floem"
+
+[package]
+name = "floem"
+version.workspace = true
+authors = ["The Floem contributors"]
+readme = "README.md"
+repository.workspace = true
+description = "A native Rust UI library with fine-grained reactivity"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[workspace.dependencies]
+peniko = { version = "0.6.0", features = ["serde"] }
+parley = { version = "0.7.0" }
+fontique = { version = "0.7.0" }
+serde = { version = "1.0" }
+serde_json = { version = "1.0" }
+lapce-xi-rope = "0.4.0"
+strum = { version = "0.28", features = ["derive"] }
+strum_macros = { version = "0.28" }
+# Image format features are defined via new features
+image = { version = "0.25", default-features = false }
+imbl = "7.0"
+resvg = { version = "0.46" }
+raw-window-handle = "0.6.0"
+unicode-segmentation = "1.10"
+wgpu = { version = "27.0" }
+parking_lot = { version = "0.12" }
+swash = { version = "0.2" }
+muda = { version = "0.17.1", default-features = false }
+winit = { git = "https://github.com/lapce/winit", rev = "133268de675a4fda70816d78a7a1435eb972fea1", package = "floem-winit" }
+ui-events = { version = "0.3", features = ["kurbo"] }
+ui-events-winit = { path = "./ui-events-winit", package = "ui-events-floem-winit" }
+dpi = { version = "0.1.2", default-features = false }
+rustc-hash = "2.1"
+
+[dependencies]
+slotmap = "1.0"
+sha2 = "0.10"
+bitflags = "2.9"
+indexmap = "2"
+rustc-hash.workspace = true
+smallvec = "1.15"
+educe = "0.6"
+taffy = { version = "0.9.2", features = ["grid"] }
+rfd = { version = "0.17.1", default-features = true}
+tokio = { version = "1", features = ["sync", "rt"], optional = true }
+raw-window-handle = { workspace = true }
+unicode-segmentation = { workspace = true }
+peniko = { workspace = true }
+imbl.workspace = true
+parley = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true }
+lapce-xi-rope = { workspace = true, optional = true }
+strum = { workspace = true, optional = true }
+strum_macros = { workspace = true, optional = true }
+paste = "1.0"
+floem_renderer = { path = "renderer", version = "0.2.0" }
+floem_skia_renderer = { path = "skia", version = "0.2.0", optional = true }
+floem_vello_renderer = { path = "vello", version = "0.2.0", optional = true }
+floem_vger_renderer = { path = "vger", version = "0.2.0", optional = true }
+floem_tiny_skia_renderer = { path = "tiny_skia", version = "0.2.0" }
+floem_reactive = { path = "reactive", version = "0.2.0" }
+floem-editor-core = { path = "editor-core", version = "0.2.0", optional = true }
+copypasta = { version = "0.10", default-features = false, features = [
+  "wayland",
+  "x11",
+] }
+parking_lot = { workspace = true }
+image = { workspace = true }
+winit = { workspace = true }
+futures = { version = "0.3.31" }
+crossbeam = { version = "0.8", optional = true }
+ui-events.workspace = true
+ui-events-winit.workspace = true
+dpi.workspace = true
+wgpu.workspace = true
+fluent-bundle = { version = "0.16", optional = true }
+unic-langid = { version = "0.9", optional = true }
+sys-locale = { version = "0.3.2", optional = true }
+ouroboros = { version = "0.18", optional = true }
+understory_box_tree = { git = "https://github.com/jrmoulton/understory", rev = "2c2abb8c4bd9", package = "understory_box_tree" }
+understory_event_state = { git = "https://github.com/jrmoulton/understory", rev = "2c2abb8c4bd9", package = "understory_event_state" }
+understory_index = { git = "https://github.com/jrmoulton/understory", rev = "2c2abb8c4bd9", package = "understory_index" }
+understory_focus = { git = "https://github.com/jrmoulton/understory", rev = "2c2abb8c4bd9", package = "understory_focus" }
+understory_virtual_list = { git = "https://github.com/jrmoulton/understory", rev = "2c2abb8c4bd9", package = "understory_virtual_list" }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+muda = { workspace = true }
+
+[target.'cfg(any(target_os = "linux"))'.dependencies]
+muda = { workspace = true, default-features = false, features = ["gtk"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { version = "0.4" }
+web-time = "1"
+wgpu = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+clipboard-win = "5.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", default-features = false }
+objc2-foundation = { version = "0.3", default-features = false }
+objc2-app-kit = { version = "0.3", features = [
+  "NSApplication",
+  "NSResponder",
+  "NSView",
+] }
+dispatch2 = {version = "0.3.0"}
+
+[features]
+default = ["editor", "default-image-formats", "vger", "serde"]
+skia = ["dep:floem_skia_renderer"]
+vello = ["dep:floem_vello_renderer"]
+vger = ["dep:floem_vger_renderer"]
+# tiny-skia = ["dep:floem_tiny_skia_renderer"]
+serde = [
+  "dep:serde",
+  "winit/serde",
+  "peniko/serde",
+  "lapce-xi-rope/serde",
+  "smallvec/serde",
+  "floem-editor-core?/serde",
+]
+editor = [
+  "floem-editor-core",
+  "dep:lapce-xi-rope",
+  "dep:strum",
+  "dep:strum_macros",
+]
+# Image support
+# From: https://github.com/image-rs/image/blob/main/Cargo.toml
+default-image-formats = ["image-jpeg", "image-ico", "image-png", "image-webp"]
+image-avif = ["image/avif"]
+image-bmp = ["image/bmp"]
+image-dds = ["image/dds"]
+image-exr = ["image/exr"]
+image-ff = ["image/ff"]
+image-gif = ["image/gif"]
+image-hdr = ["image/hdr"]
+image-ico = ["image/ico"]
+image-jpeg = ["image/jpeg"]
+image-png = ["image/png"]
+image-pnm = ["image/pnm"]
+image-qoi = ["image/qoi"]
+image-tga = ["image/tga"]
+image-tiff = ["image/tiff"]
+image-webp = ["image/webp"]
+tokio = ["dep:tokio"]
+# rfd (file dialog) async runtime
+crossbeam = ["dep:crossbeam", "floem_renderer/crossbeam"]
+localization = ["dep:fluent-bundle", "dep:unic-langid", "dep:sys-locale", "dep:ouroboros"]
+
+[dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
+floem_renderer = { path = "renderer" }
+peniko = { workspace = true }
+
+[[bench]]
+name = "event_dispatch"
+harness = false
+
+[[bench]]
+name = "style_computation"
+harness = false
+
+[[bench]]
+name = "painting"
+harness = false
+
+[[bench]]
+name = "layout"
+harness = false
+
+[[bench]]
+name = "animation"
+harness = false
+
+[[bench]]
+name = "text"
+harness = false
+
+[[bench]]
+name = "editor_layout_cols"
+harness = false
+
+[[bench]]
+name = "view_creation"
+harness = false

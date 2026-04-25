@@ -1,0 +1,9 @@
+/target
+/Cargo.lock
+/.lapce
+/.idea
+/.zed
+.DS_Store
+rustc-ice*
+*.orig
+*.db
