@@ -11,3 +11,13 @@
 [alias]
 editor     = "run -p ocarina-editor -- projects/example-scene"
 editor-rel = "run -p ocarina-editor --release -- projects/example-scene"
+
+# Pin macOS deployment target. Without this, C build scripts (zstd,
+# libgit2, libssh2, openssl-sys, wasmtime-runtime, tree-sitter) target
+# whatever SDK is installed locally — currently macOS 26 — while Rust
+# links with -mmacosx-version-min=11. The linker drops symbols built
+# against the newer SDK as incompatible, leaving Rust code with
+# hundreds of "undefined symbols" errors. 13.0 (Ventura, 2022) is a
+# reasonable floor for a dev app.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "13.0"
