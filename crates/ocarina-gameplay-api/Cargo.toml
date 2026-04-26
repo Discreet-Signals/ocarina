@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Stable FFI contract between the Ocarina editor/runtime and hot-reloadable gameplay dylibs."
+description = "Public API for Ocarina gameplay code: Script trait, Context, registration. Plus the legacy FFI surface for cdylib hot-reload."
 
 [dependencies]
-# Deliberately kept at zero — the ABI must not pull in heavy types
-# whose layout can change across rustc patch versions.
+# Engine-side primitives the script API hands to user code.
+ocarina-core.workspace = true
+ocarina-derive.workspace = true
+bevy_ecs.workspace = true
+inventory.workspace = true
+glam.workspace = true
 
 [lints]
 workspace = true

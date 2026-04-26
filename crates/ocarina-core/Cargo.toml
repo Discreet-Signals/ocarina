@@ -13,5 +13,8 @@ serde.workspace = true
 ocarina-derive.workspace = true
 ocarina-schema.workspace = true
 
+[dev-dependencies]
+toml.workspace = true
+
 [lints]
 workspace = true

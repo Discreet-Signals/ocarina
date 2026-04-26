@@ -25,8 +25,10 @@
 //! shipped game.
 
 mod camera;
+mod gizmo;
 mod mesh;
 mod renderer;
+mod transform_io;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -44,12 +46,15 @@ use floem::{
     views::{Decorators, canvas},
 };
 use floem_renderer::WgpuPassCtx;
-use glam::{Mat4, Vec3, Vec4};
-use ocarina_core::components::BasicMesh;
+use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
+use ocarina_core::components::{BasicMesh, Transform};
 use ocarina_scene::Scene;
 
 pub use camera::OrbitCamera;
-pub use renderer::{EntityInstance, RenderMode, ViewportCamera, ViewportRenderer};
+pub use gizmo::Axis;
+pub use renderer::{EntityInstance, GizmoOverlay, RenderMode, ViewportCamera, ViewportRenderer};
+
+use gizmo::GizmoDrag;
 
 /// Reactive handle to the loaded scene. `None` means no project is
 /// open. Stored in `RwSignal` so panels (viewport, file explorer,
@@ -104,9 +109,9 @@ pub fn viewport_panel(
     // so the signal *value* doesn't change when files reload — only a
     // continuous repaint surfaces the new state.
     let frame_tick = RwSignal::new(0u64);
-    spawn_repaint_loop(frame_tick);
+    spawn_repaint_loop(state.clone(), frame_tick);
 
-    canvas({
+    let canvas_view = canvas({
         let state = state.clone();
         move |cx, size| {
             // Tracked read: any frame_tick.update() triggers another
@@ -136,12 +141,64 @@ pub fn viewport_panel(
             // forwarding to the renderer.
             cx.submit_wgpu_pass(local_rect, pass);
         }
-    })
+    });
+
+    // Capture the canvas's view id so the PointerDown handler can
+    // make a synchronous `request_focus` call (belt-and-suspenders
+    // alongside Floem's auto-focus on click for `keyboard_navigable`
+    // views).
+    let canvas_id = canvas_view.id();
+
+    canvas_view
+    // `keyboard_navigable()` is the load-bearing piece here:
+    //   - It registers our id in `app_state.keyboard_navigable`.
+    //   - During PointerDown dispatch, Floem's `update_focus` auto-
+    //     focuses the deepest keyboard_navigable view at the click
+    //     point — first claim wins (because focus is taken to None
+    //     at the start of PointerDown). Our canvas is a leaf, so it
+    //     wins against any ancestor focus claims (editor, terminal).
+    //   - Without this flag, KeyDown events won't route here even if
+    //     `id.request_focus()` is called.
+    .keyboard_navigable()
     .style(|s| s.size_full().cursor(CursorStyle::Default))
     .on_event_stop(EventListener::PointerDown, {
         let state = state.clone();
         move |e: &Event| {
             let Event::PointerDown(pe) = e else { return };
+
+            // Belt-and-suspenders: ask for focus explicitly too.
+            // Floem's auto-focus already does this for navigable
+            // views, but if any wrapper view above us also claims
+            // navigable status, this ensures our id wins regardless.
+            canvas_id.request_focus();
+
+            // Gizmo handle takes precedence over orbit. Try to start
+            // a gizmo drag first; if it lands, suppress the orbit
+            // drag_mode so PointerMove drives the entity instead of
+            // the camera.
+            if pe.button.mouse_button() == floem::pointer::MouseButton::Primary {
+                let (camera, size) = {
+                    let s = state.borrow();
+                    (clone_camera(&s.camera), s.last_size)
+                };
+                if let Some(sel) = selection_signal.get_untracked() {
+                    if let Some(scene_rc) = scene_signal.get_untracked() {
+                        let mut scene = scene_rc.borrow_mut();
+                        if let Some(drag) = try_start_gizmo_drag(
+                            pe.pos, size, &camera, &mut scene, sel.entity,
+                        ) {
+                            drop(scene);
+                            let mut s = state.borrow_mut();
+                            s.last_pointer = Some(pe.pos);
+                            s.dragged = false;
+                            s.drag_mode = None;
+                            s.gizmo_drag = Some(drag);
+                            return;
+                        }
+                    }
+                }
+            }
+
             let mut s = state.borrow_mut();
             s.last_pointer = Some(pe.pos);
             s.dragged = false;
@@ -157,6 +214,27 @@ pub fn viewport_panel(
         let state = state.clone();
         move |e: &Event| {
             let Event::PointerMove(pm) = e else { return };
+
+            // Gizmo drag wins over orbit. Pull the snapshot we need
+            // before re-borrowing the scene.
+            let (drag, camera, size, sel) = {
+                let s = state.borrow();
+                (
+                    s.gizmo_drag.clone(),
+                    clone_camera(&s.camera),
+                    s.last_size,
+                    selection_signal.get_untracked(),
+                )
+            };
+            if let (Some(drag), Some(sel)) = (drag, sel) {
+                if let Some(scene_rc) = scene_signal.get_untracked() {
+                    let mut scene = scene_rc.borrow_mut();
+                    apply_gizmo_drag(&drag, pm.pos, size, &camera, &mut scene, sel.entity);
+                }
+                state.borrow_mut().last_pointer = Some(pm.pos);
+                return;
+            }
+
             let mut s = state.borrow_mut();
             if let (Some(prev), Some(mode)) = (s.last_pointer, s.drag_mode) {
                 let dx = (pm.pos.x - prev.x) as f32;
@@ -179,6 +257,28 @@ pub fn viewport_panel(
         let state = state.clone();
         move |e: &Event| {
             let Event::PointerUp(pe) = e else { return };
+
+            // Releasing a gizmo drag: persist the entity's current
+            // Transform to disk, clear drag state, and skip the
+            // click-pick path entirely.
+            let was_gizmo_drag = state.borrow().gizmo_drag.is_some();
+            if was_gizmo_drag {
+                let sel = selection_signal.get_untracked();
+                if let (Some(sel), Some(scene_rc)) = (sel, scene_signal.get_untracked()) {
+                    let scene = scene_rc.borrow();
+                    let transform = scene
+                        .world
+                        .get::<Transform>(sel.entity)
+                        .copied();
+                    drop(scene);
+                    if let Some(t) = transform {
+                        persist_gizmo_drag(&sel.folder, t);
+                    }
+                }
+                state.borrow_mut().gizmo_drag = None;
+                return;
+            }
+
             let was_primary_click = pe.button.mouse_button()
                 == floem::pointer::MouseButton::Primary
                 && !state.borrow().dragged;
@@ -223,19 +323,85 @@ pub fn viewport_panel(
             }
         }
     })
+    .on_event_stop(EventListener::KeyDown, {
+        let state = state.clone();
+        move |e: &Event| {
+            let Event::KeyDown(ke) = e else { return };
+            // KeyDown only flips the held-state flag; `spawn_repaint_loop`
+            // does the actual integration each frame so multiple held
+            // keys compose into one direction vector and movement
+            // doesn't depend on the OS key-repeat rate.
+            if let Some(slot) = held_key_slot(&mut state.borrow_mut().held_keys, ke) {
+                *slot = true;
+            }
+        }
+    })
+    .on_event_stop(EventListener::KeyUp, {
+        let state = state.clone();
+        move |e: &Event| {
+            let Event::KeyUp(ke) = e else { return };
+            if let Some(slot) = held_key_slot(&mut state.borrow_mut().held_keys, ke) {
+                *slot = false;
+            }
+        }
+    })
 }
 
-/// Recursively schedule a `frame_tick.update(...)` every ~16 ms,
-/// driving canvas repaints at ~60 fps. `exec_after` is one-shot, so
-/// the closure re-arms itself.
+/// Map a key event to the corresponding `HeldKeys` field. Returns
+/// `None` for keys we don't track.
+fn held_key_slot<'a>(
+    keys: &'a mut HeldKeys,
+    ke: &floem::keyboard::KeyEvent,
+) -> Option<&'a mut bool> {
+    use floem::keyboard::{KeyCode, PhysicalKey};
+    match ke.key.physical_key {
+        PhysicalKey::Code(KeyCode::KeyW) => Some(&mut keys.w),
+        PhysicalKey::Code(KeyCode::KeyA) => Some(&mut keys.a),
+        PhysicalKey::Code(KeyCode::KeyS) => Some(&mut keys.s),
+        PhysicalKey::Code(KeyCode::KeyD) => Some(&mut keys.d),
+        PhysicalKey::Code(KeyCode::KeyQ) => Some(&mut keys.q),
+        PhysicalKey::Code(KeyCode::KeyE) => Some(&mut keys.e),
+        _ => None,
+    }
+}
+
+/// Per-frame loop. Recursively schedules itself every ~16 ms via
+/// `exec_after` (one-shot timer that re-arms each tick).
 ///
-/// When the surrounding scope is disposed (workspace close, app exit)
-/// `frame_tick`'s underlying signal is gone; `update` becomes a no-op
-/// internally, so the chain quietly idles instead of misbehaving.
-fn spawn_repaint_loop(frame_tick: RwSignal<u64>) {
+/// Two responsibilities:
+/// 1. Bump `frame_tick` so the canvas repaints (the canvas reads it
+///    as a tracked signal — see `viewport_panel`).
+/// 2. Sample held WASD/QE keys and integrate camera movement. This
+///    is the *real* input loop that game engines use: held keys are
+///    polled at frame rate, normalized into a direction vector, and
+///    applied with `speed × dt`. KeyDown/KeyUp only flip flags; the
+///    actual motion happens here, so multiple keys compose cleanly
+///    (W+D = diagonal, no key-repeat artefacts, no OS dependency).
+fn spawn_repaint_loop(state: Rc<RefCell<PanelState>>, frame_tick: RwSignal<u64>) {
+    const FRAME_DT: f32 = 0.016; // ~60 Hz timer cadence
     exec_after(Duration::from_millis(16), move |_| {
+        // ── Movement integration ──────────────────────────────────
+        {
+            let mut s = state.borrow_mut();
+            let keys = s.held_keys;
+            let dir_right = (keys.d as i32 - keys.a as i32) as f32;
+            let dir_up = (keys.e as i32 - keys.q as i32) as f32;
+            let dir_forward = (keys.w as i32 - keys.s as i32) as f32;
+            if dir_right != 0.0 || dir_up != 0.0 || dir_forward != 0.0 {
+                // Normalize so diagonal isn't faster than axis-aligned
+                // motion. Scale speed by camera distance so a
+                // far-out viewport zooms across the scene at the
+                // same on-screen rate as a close-in one.
+                let dir = Vec3::new(dir_right, dir_up, dir_forward).normalize_or_zero();
+                let speed = (s.camera.distance * 1.5).max(1.0); // world units / sec
+                let v = dir * speed * FRAME_DT;
+                s.camera.move_target(v.z, v.x, v.y);
+            }
+        }
+
+        // ── Repaint trigger ───────────────────────────────────────
         frame_tick.update(|v| *v = v.wrapping_add(1));
-        spawn_repaint_loop(frame_tick);
+        spawn_repaint_loop(state.clone(), frame_tick);
     });
 }
 
@@ -260,6 +426,25 @@ struct PanelState {
     /// active. Distinguishes "primary click" (no movement → pick) from
     /// "primary drag" (orbit). Reset on every PointerDown.
     dragged: bool,
+    /// Active drag on a gizmo handle, or `None` if not currently
+    /// manipulating. While `Some`, pointer events drive the entity's
+    /// Transform instead of the orbit camera.
+    gizmo_drag: Option<GizmoDrag>,
+    /// Currently-held navigation keys. Set on KeyDown, cleared on
+    /// KeyUp; sampled each frame by `spawn_repaint_loop` to drive
+    /// continuous camera movement (FPS-style: hold to move, release
+    /// to stop, multiple held simultaneously sum into one direction).
+    held_keys: HeldKeys,
+}
+
+#[derive(Default, Clone, Copy)]
+struct HeldKeys {
+    w: bool,
+    a: bool,
+    s: bool,
+    d: bool,
+    q: bool,
+    e: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -277,6 +462,8 @@ impl PanelState {
             last_pointer: None,
             last_size: Size::ZERO,
             dragged: false,
+            gizmo_drag: None,
+            held_keys: HeldKeys::default(),
         }
     }
 
@@ -313,12 +500,19 @@ impl PanelState {
             return;
         };
 
-        // Build entity instance list. No scene = render an empty
-        // viewport (still clears depth so panel BG shows through).
-        let entities: Vec<EntityInstance> = scene
+        // Build entity instance list + gizmo overlay (if anything is
+        // selected and resolvable). Both walk `world_transforms`, so
+        // we share the borrow.
+        let (entities, gizmo_origin) = scene
             .map(|scene| {
                 let mut scene = scene.borrow_mut();
-                build_entity_instances(&mut scene)
+                let xforms = scene.world_transforms();
+                let origin = selected_entity
+                    .and_then(|e| xforms.get(&e).copied())
+                    .map(|m| m.w_axis.truncate());
+                let world = &mut scene.world;
+                let entities = build_entity_instances_from(&xforms, world);
+                (entities, origin)
             })
             .unwrap_or_default();
 
@@ -328,9 +522,23 @@ impl PanelState {
         let view_proj = self.camera.view_projection(aspect);
         let camera = ViewportCamera::standard(view_proj);
 
+        let gizmo = gizmo_origin.map(|origin| GizmoOverlay {
+            origin,
+            scale_world: gizmo_scale(&self.camera),
+            active_axis: self.gizmo_drag.as_ref().map(|d| d.axis()),
+        });
+
         let mode = RenderMode::Edit { selected_entity };
-        renderer.render(&entities, ctx, camera, mode);
+        renderer.render(&entities, ctx, camera, mode, gizmo);
     }
+}
+
+/// World-space gizmo size derived from the camera's distance to the
+/// orbit target — keeps the handles roughly constant on-screen as the
+/// camera dollies in / out. Clamped at the bottom so handles don't
+/// disappear when zoomed in close.
+fn gizmo_scale(camera: &OrbitCamera) -> f32 {
+    (camera.distance * 0.18).max(0.25)
 }
 
 /// Snapshot the orbit camera's mutable state so the pick path can
@@ -344,6 +552,171 @@ fn clone_camera(c: &OrbitCamera) -> OrbitCamera {
         fov_y: c.fov_y,
         near: c.near,
         far: c.far,
+    }
+}
+
+/// Build a world-space pick ray through `pos_logical` (panel pixels)
+/// using the current camera and panel size. Returns `(origin, dir)`.
+fn pointer_ray(
+    pos_logical: Point,
+    size_logical: Size,
+    camera: &OrbitCamera,
+) -> Option<(Vec3, Vec3)> {
+    if size_logical.width <= 0.0 || size_logical.height <= 0.0 {
+        return None;
+    }
+    let aspect = (size_logical.width / size_logical.height) as f32;
+    let u = (pos_logical.x / size_logical.width).clamp(0.0, 1.0) as f32;
+    let v = (pos_logical.y / size_logical.height).clamp(0.0, 1.0) as f32;
+    Some(camera.ray_through_uv(u, v, aspect))
+}
+
+fn euler_deg_to_quat(deg: Vec3) -> Quat {
+    Quat::from_euler(
+        EulerRot::XYZ,
+        deg.x.to_radians(),
+        deg.y.to_radians(),
+        deg.z.to_radians(),
+    )
+}
+
+fn quat_to_euler_deg(q: Quat) -> Vec3 {
+    let (x, y, z) = q.to_euler(EulerRot::XYZ);
+    Vec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees())
+}
+
+/// Try to start a gizmo drag: ray-test against both the translate
+/// axes and the rotate rings around the selected entity's world
+/// position. Returns the drag state for whichever handle was hit, or
+/// `None` if the click missed every handle (caller falls back to
+/// orbit / scene click-pick).
+///
+/// Translate handles are checked first; ties go to translate since
+/// the user usually grabs the central axis bar before reaching the
+/// surrounding ring.
+fn try_start_gizmo_drag(
+    pos: Point,
+    size: Size,
+    camera: &OrbitCamera,
+    scene: &mut Scene,
+    entity: Entity,
+) -> Option<GizmoDrag> {
+    let (ray_o, ray_d) = pointer_ray(pos, size, camera)?;
+    let xforms = scene.world_transforms();
+    let world_xform = xforms.get(&entity).copied()?;
+    let origin = world_xform.w_axis.truncate();
+    let scale = gizmo_scale(camera);
+    let transform = scene.world.get::<Transform>(entity).copied()?;
+
+    if let Some(axis) = gizmo::pick_translate_axis(origin, ray_o, ray_d, scale) {
+        let axis_param =
+            gizmo::closest_point_on_axis(origin, axis.dir(), ray_o, ray_d)?;
+        return Some(GizmoDrag::Translate {
+            axis,
+            start_position: transform.position,
+            start_rotation: transform.rotation,
+            start_scale: transform.scale,
+            start_axis_param: axis_param,
+        });
+    }
+
+    if let Some(axis) = gizmo::pick_rotate_axis(origin, ray_o, ray_d, scale) {
+        let angle = gizmo::rotate_drag_angle(origin, axis, ray_o, ray_d)?;
+        return Some(GizmoDrag::Rotate {
+            axis,
+            start_position: transform.position,
+            start_quat: euler_deg_to_quat(transform.rotation),
+            start_scale: transform.scale,
+            start_angle: angle,
+        });
+    }
+
+    None
+}
+
+/// Apply an in-progress gizmo drag to the entity's local Transform.
+/// Mutates only `Transform.position` (translate) or `Transform.rotation`
+/// (rotate); other fields remain at their drag-start snapshot.
+///
+/// Operates in *world-axis* space. For an entity with a non-identity
+/// parent rotation/scale, the axis bars / rings still align to world
+/// X/Y/Z; the change is then expressed as if the parent were identity.
+/// Good enough for v1 — the common case is unrotated parents.
+fn apply_gizmo_drag(
+    drag: &GizmoDrag,
+    pos: Point,
+    size: Size,
+    camera: &OrbitCamera,
+    scene: &mut Scene,
+    entity: Entity,
+) {
+    let Some((ray_o, ray_d)) = pointer_ray(pos, size, camera) else {
+        return;
+    };
+    // Origin = world-space center of the gizmo. Capture once for the
+    // duration of the drag — re-reading from `world_transforms` mid-
+    // drag would shift as we mutate the entity.
+    let xforms = scene.world_transforms();
+    let Some(world_xform) = xforms.get(&entity).copied() else {
+        return;
+    };
+    let origin = world_xform.w_axis.truncate();
+
+    match drag {
+        GizmoDrag::Translate {
+            axis,
+            start_position,
+            start_axis_param,
+            ..
+        } => {
+            let Some(param) =
+                gizmo::closest_point_on_axis(origin, axis.dir(), ray_o, ray_d)
+            else {
+                return;
+            };
+            let delta = param - *start_axis_param;
+            let new_position = *start_position + axis.dir() * delta;
+            if let Some(mut t) = scene.world.get_mut::<Transform>(entity) {
+                t.position = new_position;
+            }
+        }
+        GizmoDrag::Rotate {
+            axis,
+            start_quat,
+            start_angle,
+            ..
+        } => {
+            let Some(angle) = gizmo::rotate_drag_angle(origin, *axis, ray_o, ray_d) else {
+                return;
+            };
+            let delta = angle - *start_angle;
+            let new_quat = Quat::from_axis_angle(axis.dir(), delta) * *start_quat;
+            if let Some(mut t) = scene.world.get_mut::<Transform>(entity) {
+                t.rotation = quat_to_euler_deg(new_quat);
+            }
+        }
+    }
+}
+
+/// Persist the entity's current Transform to disk. Looks up the
+/// `[transform]`-bearing file in the entity's folder; if none exists,
+/// silently skips (the user dragged a transform that isn't backed by
+/// a single file — currently uncommon, but valid).
+fn persist_gizmo_drag(folder: &std::path::Path, transform: Transform) {
+    let Some(path) = transform_io::find_transform_file(folder) else {
+        log::warn!(
+            "ocarina-viewport: no [transform] file in {} — gizmo edit not saved",
+            folder.display()
+        );
+        return;
+    };
+    if let Err(e) = transform_io::write_transform(
+        &path,
+        transform.position,
+        transform.rotation,
+        transform.scale,
+    ) {
+        log::warn!("ocarina-viewport: write_transform({}): {e}", path.display());
     }
 }
 
@@ -416,43 +789,27 @@ fn ray_aabb(ray_origin: Vec3, ray_dir: Vec3, min: Vec3, max: Vec3) -> Option<f32
 
 /// Walk the scene's entities (folding parent transforms via
 /// `Scene::world_transforms`), pair each with a renderer-friendly
-/// `EntityInstance`. Entities with a `BasicMesh` render at full
-/// (placeholder cube) size with the mesh's tint. Entities without a
-/// mesh — pure-Transform "empties" like cameras or organizational
-/// nodes — render as a small gold marker cube ("dot") so they're
-/// visible and selectable in the viewport without being mistaken for
-/// real geometry.
+/// `EntityInstance`. Entities with a `BasicMesh` carry the mesh's
+/// tint; meshless ones get the default neutral grey.
 ///
-/// The dot's small visual size is purely a renderer concern: pick
-/// hit-testing in `pick_at` keeps using the entity's actual world
-/// transform (a unit cube), so clicking near a meshless entity still
-/// selects it generously even though the visual marker is tiny.
-fn build_entity_instances(scene: &mut Scene) -> Vec<EntityInstance> {
-    /// Soft gold so the dot reads as "marker, not geometry" against
-    /// the cool-grey default mesh tint.
-    const DOT_TINT: Vec4 = Vec4::new(0.95, 0.85, 0.40, 1.0);
-    /// World-space size of the meshless marker cube. Constant in
-    /// world units (the v0 trade-off vs. constant-screen-size dots,
-    /// which would need viewport size in the shader).
-    const DOT_SCALE: f32 = 0.1;
+/// Takes the precomputed `world_xforms` map + a `&World` because the
+/// caller (render_frame) needs the same map for gizmo-origin lookup,
+/// and `Scene::world_transforms` would otherwise be called twice and
+/// require &mut Scene each time.
+fn build_entity_instances_from(
+    world_xforms: &std::collections::HashMap<Entity, Mat4>,
+    world: &bevy_ecs::world::World,
+) -> Vec<EntityInstance> {
+    const DEFAULT_TINT: Vec4 = Vec4::new(0.78, 0.82, 0.90, 1.0);
 
-    let world_xforms = scene.world_transforms();
-
-    // Pull tints up front so we don't borrow `scene.world` across
-    // the iteration (world_transforms already returned its borrow).
-    let world = &mut scene.world;
     let mut instances = Vec::with_capacity(world_xforms.len());
     for (entity, world_xform) in world_xforms {
-        let (final_xform, tint) = match world.get::<BasicMesh>(entity) {
-            Some(m) => (world_xform, m.tint),
-            None => (
-                world_xform * Mat4::from_scale(Vec3::splat(DOT_SCALE)),
-                DOT_TINT,
-            ),
-        };
+        let tint = world
+            .get::<BasicMesh>(*entity)
+            .map_or(DEFAULT_TINT, |m| m.tint);
         instances.push(EntityInstance {
-            entity,
-            world_xform: final_xform,
+            entity: *entity,
+            world_xform: *world_xform,
             tint,
         });
     }

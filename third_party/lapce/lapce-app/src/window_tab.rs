@@ -2439,6 +2439,9 @@ impl WindowTabData {
             Focus::Panel(PanelKind::SourceControl) => {
                 Some(keypress.key_down(event, &self.source_control))
             }
+            Focus::Panel(PanelKind::FileExplorer) => {
+                Some(keypress.key_down(event, &self.file_explorer))
+            }
             _ => None,
         };
 

@@ -4453,6 +4453,7 @@ dependencies = [
  "ocarina-rhi",
  "ocarina-rhi-wgpu",
  "ocarina-scene",
+ "toml_edit 0.23.10+spec-1.0.0",
  "wgpu",
 ]
 
@@ -6406,6 +6407,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.15",
 ]
 

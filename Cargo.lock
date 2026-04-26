@@ -2720,6 +2720,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hello-game"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "log",
+ "ocarina-core",
+ "ocarina-gameplay-api",
+ "ocarina-runtime",
+]
+
+[[package]]
 name = "hello-gameplay"
 version = "0.1.0"
 dependencies = [
@@ -4448,6 +4460,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode 2.0.1",
+ "log",
  "ocarina-core",
  "ocarina-schema",
  "serde",
@@ -4460,7 +4473,12 @@ name = "ocarina-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "env_logger",
+ "log",
+ "ocarina-bake",
  "ocarina-core",
+ "ocarina-runtime",
+ "ocarina-scene",
  "ocarina-schema",
  "serde",
  "serde_json",
@@ -4476,6 +4494,7 @@ dependencies = [
  "ocarina-derive",
  "ocarina-schema",
  "serde",
+ "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -4498,6 +4517,13 @@ dependencies = [
 [[package]]
 name = "ocarina-gameplay-api"
 version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "glam",
+ "inventory",
+ "ocarina-core",
+ "ocarina-derive",
+]
 
 [[package]]
 name = "ocarina-rhi"
@@ -4533,10 +4559,19 @@ dependencies = [
 name = "ocarina-runtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bevy_ecs",
  "bincode 2.0.1",
+ "bytemuck",
+ "glam",
+ "log",
  "ocarina-core",
+ "ocarina-gameplay-api",
  "ocarina-rhi",
+ "ocarina-scene",
+ "pollster",
+ "wgpu",
+ "winit 0.30.13",
 ]
 
 [[package]]
@@ -4588,6 +4623,7 @@ dependencies = [
  "ocarina-rhi",
  "ocarina-rhi-wgpu",
  "ocarina-scene",
+ "toml_edit 0.23.10+spec-1.0.0",
  "wgpu",
 ]
 
@@ -6512,6 +6548,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 0.7.5+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 0.7.15",
 ]
 

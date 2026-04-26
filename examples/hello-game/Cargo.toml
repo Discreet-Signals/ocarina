@@ -1,0 +1,18 @@
+[package]
+name = "hello-game"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "End-to-end smoke test for the Ocarina script API: defines a Spinner script, attaches it to an entity in a tiny project, runs N ticks, prints the resulting transform."
+
+[[bin]]
+name = "hello-game"
+path = "src/main.rs"
+
+[dependencies]
+ocarina-core         = { path = "../../crates/ocarina-core" }
+ocarina-runtime      = { path = "../../crates/ocarina-runtime", features = ["windowed"] }
+ocarina-gameplay-api = { path = "../../crates/ocarina-gameplay-api" }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"

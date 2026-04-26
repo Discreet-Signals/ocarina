@@ -892,6 +892,7 @@ impl PaletteData {
 
         let executed_run_configs = self.executed_run_configs.borrow();
         let mut items = Vec::new();
+
         if let Some(configs) = configs.as_ref() {
             for config in &configs.configs {
                 items.push((
@@ -936,8 +937,48 @@ impl PaletteData {
         }
 
         items.sort_by_key(|(executed, _item)| std::cmp::Reverse(executed.copied()));
-        self.items
-            .set(items.into_iter().map(|(_, item)| item).collect());
+        let mut final_items: im::Vector<PaletteItem> = im::Vector::new();
+
+        // Ocarina: top-of-list shortcuts that compile + optionally
+        // launch the project's binary via cargo. They piggyback on
+        // the existing RunAndDebug pipeline (output streams to the
+        // terminal panel) — no new InternalCommand needed.
+        if let Some(workspace_path) = self.workspace.path.as_ref() {
+            for (label, args) in [
+                ("Build", vec!["build".into(), "--release".into()]),
+                ("Run", vec!["run".into(), "--release".into()]),
+            ] {
+                let config = lapce_rpc::dap_types::RunDebugConfig {
+                    ty: None,
+                    name: format!("Ocarina: {label}"),
+                    program: "cargo".into(),
+                    args: Some(args),
+                    cwd: workspace_path.to_str().map(str::to_owned),
+                    env: None,
+                    prelaunch: None,
+                    debug_command: None,
+                    dap_id: lapce_rpc::dap_types::DapId::default(),
+                    tracing_output: false,
+                    config_source: lapce_rpc::dap_types::ConfigSource::Palette,
+                };
+                final_items.push_back(PaletteItem {
+                    content: PaletteItemContent::RunAndDebug {
+                        mode: RunDebugMode::Run,
+                        config,
+                    },
+                    // Prefix `ocarina` so a user typing "ocar",
+                    // "build", or "run" lands on these immediately.
+                    filter_text: format!("ocarina {label}"),
+                    score: 0,
+                    indices: vec![],
+                });
+            }
+        }
+
+        for (_, item) in items {
+            final_items.push_back(item);
+        }
+        self.items.set(final_items);
     }
 
     fn get_run_configs(&self) {

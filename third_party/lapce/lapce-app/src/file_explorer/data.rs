@@ -18,7 +18,7 @@ use floem::{
 };
 use globset::Glob;
 use lapce_core::{
-    command::{EditCommand, FocusCommand},
+    command::{EditCommand, FocusCommand, MoveCommand},
     mode::Mode,
     register::Clipboard,
 };
@@ -65,8 +65,13 @@ impl KeyPressFocus for FileExplorerData {
     }
 
     fn check_condition(&self, condition: Condition) -> bool {
-        self.naming.with_untracked(Naming::is_accepting_input)
-            && condition == Condition::ModalFocus
+        if self.naming.with_untracked(Naming::is_accepting_input) {
+            return condition == Condition::ModalFocus;
+        }
+        // When not in a naming editor, the file explorer behaves as a
+        // navigable list — opt into the standard `list_focus` keybindings
+        // so up/down/enter map to ListPrevious/ListNext/ListSelect.
+        condition == Condition::ListFocus
     }
 
     fn run_command(
@@ -100,7 +105,30 @@ impl KeyPressFocus for FileExplorerData {
                 _ => self.naming_editor_data.run_command(command, count, mods),
             }
         } else {
-            CommandExecuted::No
+            match &command.kind {
+                CommandKind::Focus(FocusCommand::ListPrevious) => {
+                    self.move_selection(-1);
+                    CommandExecuted::Yes
+                }
+                CommandKind::Focus(FocusCommand::ListNext) => {
+                    self.move_selection(1);
+                    CommandExecuted::Yes
+                }
+                CommandKind::Focus(FocusCommand::ListSelect) => {
+                    self.activate_selection();
+                    CommandExecuted::Yes
+                }
+                CommandKind::Focus(FocusCommand::ListExpand)
+                | CommandKind::Move(MoveCommand::Right) => {
+                    self.expand_or_step_in();
+                    CommandExecuted::Yes
+                }
+                CommandKind::Move(MoveCommand::Left) => {
+                    self.collapse_or_step_out();
+                    CommandExecuted::Yes
+                }
+                _ => CommandExecuted::No,
+            }
         }
     }
 
@@ -143,6 +171,30 @@ impl FileExplorerData {
             // only fill in the child files if there is open folder
             data.toggle_expand(&path);
         }
+
+        // Reverse Ocarina selection sync: when the viewport pushes a
+        // selection (a clicked entity → its owning folder), mirror it
+        // into the file explorer's highlight + scroll-to. The forward
+        // direction (file click → viewport) is handled in `click()`.
+        let selection_signal = data.common.ocarina_selection;
+        let effect_data = data.clone();
+        cx.create_effect(move |_| {
+            let Some(selection) = selection_signal.get() else {
+                effect_data.select.set(None);
+                return;
+            };
+            let folder = selection.folder;
+            let already_on_folder = effect_data.select.with_untracked(|s| {
+                matches!(s, Some(FileNodeViewKind::Path(p)) if p == &folder)
+            });
+            if already_on_folder {
+                return;
+            }
+            let visible = effect_data.visible_paths();
+            let idx = visible.iter().position(|p| p == &folder);
+            effect_data.select_path(folder, idx);
+        });
+
         data
     }
 
@@ -390,6 +442,117 @@ impl FileExplorerData {
     /// Closes the naming text box without applying the effect.
     pub fn cancel_naming(&self) {
         self.naming.set(Naming::None);
+    }
+
+    /// Flat list of currently visible file/directory paths in display
+    /// order, mirroring what the virtual_stack would render. Skips
+    /// in-progress naming/duplicating rows since they aren't navigable.
+    fn visible_paths(&self) -> Vec<PathBuf> {
+        let naming = self.naming.get_untracked();
+        let mut items = Vec::new();
+        self.root.with_untracked(|root| {
+            root.append_view_slice(&mut items, &naming, 0, usize::MAX, 0, 1);
+        });
+        items
+            .into_iter()
+            .filter_map(|v| match v.kind {
+                FileNodeViewKind::Path(p) => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.select.with_untracked(|s| {
+            s.as_ref().and_then(|kind| match kind {
+                FileNodeViewKind::Path(p) => Some(p.clone()),
+                FileNodeViewKind::Renaming { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+        })
+    }
+
+    fn select_path(&self, path: PathBuf, visible_index: Option<usize>) {
+        self.select.set(Some(FileNodeViewKind::Path(path)));
+        if let Some(idx) = visible_index {
+            self.scroll_to_line.set(Some(idx as f64));
+        }
+    }
+
+    pub fn move_selection(&self, delta: isize) {
+        let visible = self.visible_paths();
+        if visible.is_empty() {
+            return;
+        }
+        let len = visible.len() as isize;
+        let new_idx = match self
+            .selected_path()
+            .and_then(|p| visible.iter().position(|v| v == &p))
+        {
+            Some(i) => (i as isize + delta).clamp(0, len - 1),
+            None if delta >= 0 => 0,
+            None => len - 1,
+        } as usize;
+        let path = visible[new_idx].clone();
+        self.select_path(path, Some(new_idx));
+    }
+
+    /// Right-arrow / `o`: expand a closed directory, or step into the
+    /// first child of an already-open one. No-op for files.
+    pub fn expand_or_step_in(&self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let (is_dir, is_open) = self.root.with_untracked(|root| {
+            root.get_file_node(&path)
+                .map(|n| (n.is_dir, n.open))
+                .unwrap_or((false, false))
+        });
+        if is_dir && !is_open {
+            self.toggle_expand(&path);
+        } else if is_dir && is_open {
+            self.move_selection(1);
+        }
+    }
+
+    /// Left-arrow: collapse the current directory if open, otherwise
+    /// move selection up to the parent directory (without escaping the
+    /// workspace root).
+    pub fn collapse_or_step_out(&self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let (is_dir, is_open) = self.root.with_untracked(|root| {
+            root.get_file_node(&path)
+                .map(|n| (n.is_dir, n.open))
+                .unwrap_or((false, false))
+        });
+        if is_dir && is_open {
+            self.toggle_expand(&path);
+            return;
+        }
+        let Some(parent) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let parent_in_tree = self
+            .root
+            .with_untracked(|root| root.get_file_node(&parent).is_some());
+        if !parent_in_tree {
+            return;
+        }
+        let visible = self.visible_paths();
+        let idx = visible.iter().position(|p| p == &parent);
+        self.select_path(parent, idx);
+    }
+
+    /// Enter / `list.select`: toggle a directory or open a file, just
+    /// like a single click.
+    pub fn activate_selection(&self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let config = self.common.config;
+        self.click(&path, config);
     }
 
     pub fn click(&self, path: &Path, config: ReadSignal<Arc<LapceConfig>>) {

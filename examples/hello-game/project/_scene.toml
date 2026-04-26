@@ -1,0 +1,3 @@
+# Root-level metadata. Files prefixed with `_` are reserved and aren't
+# loaded as components onto the root entity. This file just exists so
+# the project root has *something* identifiable in tools.

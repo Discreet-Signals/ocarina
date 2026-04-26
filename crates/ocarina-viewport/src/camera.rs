@@ -81,6 +81,23 @@ impl OrbitCamera {
         self.distance = (self.distance * (1.0 - delta * 0.08)).clamp(0.3, 50.0);
     }
 
+    /// Move the orbit target along the camera's forward / right basis
+    /// vectors plus world-up — used by WASD (+Q/E) navigation. All
+    /// inputs are in *world units*; the caller scales by speed * dt.
+    ///
+    /// "Forward" is **horizontal** (the camera's forward projected onto
+    /// the XZ plane) so pitching the view doesn't make `W` fly into
+    /// the floor. Vertical motion is on world-up, decoupled from
+    /// camera pitch — Minecraft / Blender conventions.
+    pub fn move_target(&mut self, forward_units: f32, right_units: f32, up_units: f32) {
+        let view = (self.target - self.position()).normalize_or_zero();
+        // Forward projected onto the horizontal plane so W moves the
+        // camera *along the ground*, regardless of pitch.
+        let forward_flat = Vec3::new(view.x, 0.0, view.z).normalize_or_zero();
+        let right = forward_flat.cross(Vec3::Y).normalize_or_zero();
+        self.target += forward_flat * forward_units + right * right_units + Vec3::Y * up_units;
+    }
+
     /// Build a world-space ray (origin + normalized direction) through
     /// the given UV in the viewport (0..1, with v measured from the top).
     /// Used by entity picking and by the gizmo's drag math.

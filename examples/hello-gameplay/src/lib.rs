@@ -4,7 +4,7 @@
 
 use core::ffi::{c_char, CStr};
 
-use ocarina_gameplay_api::{PluginInfo, PLUGIN_ABI_VERSION};
+use ocarina_gameplay_api::ffi::{PluginInfo, PLUGIN_ABI_VERSION};
 
 const NAME: &CStr = c"hello-gameplay";
 const VERSION: &CStr = c"0.1.0";

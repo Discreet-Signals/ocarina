@@ -1,0 +1,3 @@
+# Placeholder texture for the bake/harvest demo. Stored as a text
+# stub so the file's existence drives bake; real PNG bytes show up
+# once the asset pipeline lands.

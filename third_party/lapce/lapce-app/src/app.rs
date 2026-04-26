@@ -3692,6 +3692,13 @@ fn window(window_data: WindowData) -> impl View {
     })
     .on_event_cont(EventListener::WindowGotFocus, move |_| {
         window_focus.set(true);
+        // FSEvents on macOS occasionally lags or drops events when the
+        // app is backgrounded — alt-tabbing back is the most common
+        // path for "I just changed files in Finder/another tool", so
+        // force every workspace's file tree to re-read on focus return.
+        for (_, window_tab) in window_tabs.get_untracked().iter() {
+            window_tab.file_explorer.reload();
+        }
     })
     .on_event_cont(EventListener::WindowMaximizeChanged, move |event| {
         if let Event::WindowMaximizeChanged(maximized) = event {

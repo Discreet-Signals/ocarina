@@ -37,6 +37,25 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[derive(OcarinaScript)]` — register a script struct so the
+/// runtime can attach it to entities whose `[script]` references the
+/// matching project-relative path.
+///
+/// Required struct attribute:
+/// - `#[ocarina_script(path = "scripts/my_script.rs")]`
+///
+/// The struct must implement `Script` (defined in
+/// `ocarina-gameplay-api`) and `Default` — the registry calls
+/// `Self::default()` to construct each instance.
+#[proc_macro_derive(OcarinaScript, attributes(ocarina_script))]
+pub fn derive_ocarina_script(input: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(input as DeriveInput);
+    match expand_script(&ast) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
 // ─────────────────────── Implementation ────────────────────
 
 fn expand(ast: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -214,6 +233,55 @@ fn emit_output(
     }
 }
 
+// ─────────────────── Script derive ────────────────────
+
+fn expand_script(ast: &DeriveInput) -> syn::Result<TokenStream2> {
+    let struct_name = &ast.ident;
+    let path = parse_script_attrs(&ast.attrs)?.ok_or_else(|| {
+        syn::Error::new(
+            ast.span(),
+            "#[derive(OcarinaScript)] requires #[ocarina_script(path = \"scripts/foo.rs\")]",
+        )
+    })?;
+    let path_lit = LitStr::new(&path, proc_macro2::Span::call_site());
+    let rust_type_lit = LitStr::new(&struct_name.to_string(), proc_macro2::Span::call_site());
+    let construct_fn = format_ident!("__ocarina_script_construct_{}", struct_name.to_string().to_lowercase());
+
+    Ok(quote! {
+        #[allow(non_snake_case)]
+        fn #construct_fn() -> ::std::boxed::Box<dyn ::ocarina_gameplay_api::Script> {
+            ::std::boxed::Box::new(<#struct_name as ::std::default::Default>::default())
+        }
+
+        ::ocarina_gameplay_api::inventory::submit! {
+            ::ocarina_gameplay_api::ScriptRegistration {
+                path: #path_lit,
+                rust_type: #rust_type_lit,
+                construct: #construct_fn,
+            }
+        }
+    })
+}
+
+fn parse_script_attrs(attrs: &[syn::Attribute]) -> syn::Result<Option<String>> {
+    let mut path: Option<String> = None;
+    for attr in attrs {
+        if !attr.path().is_ident("ocarina_script") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("path") {
+                let s: LitStr = meta.value()?.parse()?;
+                path = Some(s.value());
+                Ok(())
+            } else {
+                Err(meta.error("unknown #[ocarina_script(...)] attribute"))
+            }
+        })?;
+    }
+    Ok(path)
+}
+
 // ─────────────────── Attribute / doc parsing ────────────────────
 
 /// Pull every `/// doc` line off the attrs and join them into one string.
@@ -322,6 +390,7 @@ fn infer_field_type(ty: &Type) -> String {
         "Vec4" => "Vec4",
         "Quat" => "Quat",
         "Color" | "Color32" => "Color",
+        "AssetPath" => "AssetPath",
         _ => "Other",
     }
     .to_string()

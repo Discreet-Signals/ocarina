@@ -170,6 +170,66 @@ Generates `src/components/cave_reverb.rs` with a stub struct, adds it to the com
 
 User gameplay code is native Rust, compiled into the shipped binary. No VM, no embedded scripting language.
 
+### Script API
+
+A *script* is a struct that implements [`Script`](crates/ocarina-gameplay-api/src/lib.rs) — a trait with two virtual methods, modelled after Unity's `Start` / `Update`:
+
+```rust
+use ocarina_gameplay_api::{Context, Entity, OcarinaScript, Script, Transform};
+
+#[derive(OcarinaScript, Default)]
+#[ocarina_script(path = "scripts/spinner.rs")]
+pub struct Spinner {
+    accumulated: f32,
+}
+
+impl Script for Spinner {
+    fn start(&mut self, _ctx: &mut Context<'_>, _entity: Entity) {}
+
+    fn tick(&mut self, ctx: &mut Context<'_>, entity: Entity) {
+        if let Some(mut t) = ctx.get_mut::<Transform>(entity) {
+            t.rotation.y += 90.0 * ctx.time.dt();
+        }
+    }
+}
+```
+
+`#[derive(OcarinaScript)]` registers the struct in the engine's script registry under its `path` attribute. Scripts attach to entities via `[[script]]` array-of-tables in any TOML file in the entity's folder:
+
+```toml
+[transform]
+position = [0.0, 0.0, 0.0]
+
+[[script]]
+path = "scripts/spinner.rs"
+
+[[script]]
+path = "scripts/health.rs"
+```
+
+`Context` exposes the most common engine operations: read / write components on any entity, spawn / despawn, find by name, and read `time` (`delta`, `total`, `frame`) + `input` (keyboard, mouse, scroll). All of it is a thin wrapper over `bevy_ecs::World` — there's no parallel API to learn.
+
+### Asset references
+
+Components reference files via `AssetPath` — a `String` newtype that's project-relative and serializes transparently in TOML. Bake harvests every `AssetPath` value across every loaded component, plus `[[script]] path` entries, to build the inclusion set; files no `.toml` references are never copied into the shipped archive.
+
+```toml
+[basic_mesh]
+source  = "assets/cube.obj"
+texture = "assets/cube_diffuse.png"
+```
+
+The pattern: dump every asset under the project root in any layout you like, reference by relative path from any component, and bake decides what ships.
+
+### CLI
+
+- `ocarina bake <project> [-o <output>]` — produces `<output>/{manifest.toml, scene/…, <referenced assets>}`. Reproducible (sorted manifest), warns on missing references.
+- `ocarina run <project> [--frames N] [--rate Hz]` — boots the runtime headless and ticks. Useful for CI smoke tests; the editor's "play" mode and shipped binaries use the same `Runtime::tick` loop.
+
+A worked example lives in `examples/hello-game` — a Spinner script attached to a cube via TOML, ticked at 60 Hz, with a binary that doubles as the static-link template projects use to ship.
+
+### Hot-reload (editor mode)
+
 To reconcile "native Rust" with "editor preview must iterate fast," the editor uses **dylib hot-reload**:
 
 - The user's gameplay crate(s) compile as `cdylib` in editor mode.

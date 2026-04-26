@@ -295,6 +295,55 @@ mod tests {
     }
 
     #[test]
+    fn loads_script_array_of_tables() {
+        use ocarina_core::components::Scripts;
+        // Fresh temp project with a single entity folder + a TOML
+        // declaring two scripts via `[[script]]`.
+        let root = std::env::temp_dir().join(format!(
+            "ocarina-script-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let entity_dir = root.join("player");
+        std::fs::create_dir_all(&entity_dir).unwrap();
+        std::fs::write(
+            entity_dir.join("player.toml"),
+            "[transform]\nposition = [0.0, 0.0, 0.0]\n\n\
+             [[script]]\npath = \"scripts/movement.rs\"\n\n\
+             [[script]]\npath = \"scripts/health.rs\"\n",
+        )
+        .unwrap();
+
+        let (mut scene, report) = crate::loader::open(&root);
+        assert!(
+            report.errors.is_empty(),
+            "scene load errors: {:?}",
+            report.errors
+        );
+
+        // Find the player entity by walking the folder map.
+        let player_entity = scene
+            .dir_entity
+            .iter()
+            .find(|(p, _)| p.ends_with("player"))
+            .map(|(_, e)| *e)
+            .expect("player entity present");
+        let scripts = scene
+            .world
+            .get::<Scripts>(player_entity)
+            .expect("Scripts attached")
+            .clone();
+        assert_eq!(scripts.items.len(), 2);
+        assert_eq!(scripts.items[0].path.as_str(), "scripts/movement.rs");
+        assert_eq!(scripts.items[1].path.as_str(), "scripts/health.rs");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn parent_world_composes_through_organizational_folders() {
         // Skip the `parent` Transform: confirm the child still falls
         // back to identity-passthrough on the missing-Transform parent.

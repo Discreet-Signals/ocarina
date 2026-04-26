@@ -1343,7 +1343,10 @@ impl FileWatchNotifier {
         let workspace = self.workspace.clone().unwrap();
         let last_diff = self.last_diff.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(500));
+            // Coalesce bursts but stay snappy: 50ms is below the
+            // perceptual threshold for "did the file just disappear?"
+            // while still batching a `git switch`-sized event flood.
+            thread::sleep(Duration::from_millis(50));
 
             {
                 local_handler.lock().take();

@@ -1,0 +1,15 @@
+[transform]
+position = [0.0, 0.0, 0.0]
+rotation = [0.0, 0.0, 0.0]
+scale    = [1.0, 1.0, 1.0]
+
+[name]
+value = "cube"
+
+[basic_mesh]
+source  = "assets/cube.obj"
+texture = "assets/cube_diffuse.png"
+tint    = [1.0, 0.85, 0.3, 1.0]
+
+[[script]]
+path = "scripts/spinner.rs"

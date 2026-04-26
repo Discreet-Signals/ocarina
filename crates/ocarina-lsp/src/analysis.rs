@@ -580,6 +580,10 @@ fn check_field_type(ty: ocarina_schema::FieldType, value: &toml::Value) -> Optio
             )),
             v => Some(format!("got {}", describe_value(v))),
         },
+        F::AssetPath => match value {
+            toml::Value::String(_) => None,
+            v => Some(format!("got {}", describe_value(v))),
+        },
         F::Other => None,
     }
 }
@@ -625,6 +629,7 @@ fn describe_field_type(ty: ocarina_schema::FieldType) -> &'static str {
         F::Vec4 => "a 4-element numeric array",
         F::Quat => "a 4-element numeric array (x, y, z, w)",
         F::Color => "a hex string or 3-/4-element numeric array",
+        F::AssetPath => "a project-relative path string",
         F::Other => "any value",
     }
 }

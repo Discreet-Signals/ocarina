@@ -434,9 +434,11 @@ fn file_explorer_view(
                     let aux_click_path = path.clone();
                     view.on_click_stop({
                         let kind = kind.clone();
+                        let focus = click_data.common.focus;
                         move |_| {
                             click_data.click(&click_path, config);
                             select.update(|x| *x = Some(kind.clone()));
+                            focus.set(Focus::Panel(PanelKind::FileExplorer));
                         }
                     })
                     .on_double_click({

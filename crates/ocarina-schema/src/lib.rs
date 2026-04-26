@@ -67,6 +67,9 @@ pub enum FieldType {
     Vec4,
     Quat,
     Color,
+    /// Project-relative path to an asset on disk. Bake harvests every
+    /// instance of this field type to build the shipping inclusion set.
+    AssetPath,
     Other,
 }
 

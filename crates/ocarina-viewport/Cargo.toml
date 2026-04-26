@@ -25,6 +25,10 @@ glam.workspace = true
 bytemuck.workspace = true
 log.workspace = true
 wgpu.workspace = true
+# toml_edit drives the gizmo's transform write-back: format-preserving
+# updates of the `[transform]` section in entity .toml files (so a
+# drag in the viewport doesn't reflow comments / surrounding fields).
+toml_edit.workspace = true
 
 [lints]
 workspace = true

@@ -13,6 +13,9 @@ struct Camera {
     light_dir: vec4<f32>,
     // rgb = base color, a unused
     base_color: vec4<f32>,
+    // xy = panel rect pixel extent (used by the 2D gizmo shader; lit
+    // pass declares it for layout compatibility, doesn't read it).
+    viewport_size: vec4<f32>,
 };
 
 struct Instance {

@@ -8,8 +8,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::AssetPath;
 use crate::math::{Mat4, Quat, Vec3, Vec4};
 use crate::Component;
+
+// Manual loader for the `[[script]]` array-of-tables form. The
+// `inventory::submit!` lives there; declaring the module here ensures
+// it links into the binary's inventory section.
+mod script_loader;
 
 /// Positions, rotates, and scales an entity in 3D space.
 ///
@@ -72,9 +78,13 @@ impl Transform {
 #[derive(Component, Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BasicMesh {
     /// Path to the mesh file, relative to the project root.
-    #[ocarina(widget = "path")]
     #[serde(default)]
-    pub source: String,
+    pub source: AssetPath,
+
+    /// Path to the diffuse texture, relative to the project root.
+    /// Empty means "no texture" — fall back to flat-shaded `tint`.
+    #[serde(default)]
+    pub texture: AssetPath,
 
     /// Optional base color tint. RGBA 0..1.
     #[ocarina(widget = "color", default = "[1.0, 1.0, 1.0, 1.0]")]
@@ -133,4 +143,25 @@ pub struct Name {
     #[ocarina(default = "\"\"")]
     #[serde(default)]
     pub value: String,
+}
+
+/// One row of `[[script]]` on an entity. Carries the project-relative
+/// path the runtime resolves against its script registry to construct
+/// + attach the script.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScriptRef {
+    #[serde(default)]
+    pub path: AssetPath,
+}
+
+/// All scripts attached to one entity. Authored as repeated
+/// `[[script]]` tables in TOML; this component holds them together so
+/// the runtime can construct + tick each one in order.
+///
+/// The scene loader treats `script` as a special section that expects
+/// an array of tables — see the manual loader registration in
+/// `ocarina-core/src/components/script.rs`.
+#[derive(bevy_ecs::component::Component, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Scripts {
+    pub items: Vec<ScriptRef>,
 }
