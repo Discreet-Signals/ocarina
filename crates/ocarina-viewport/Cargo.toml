@@ -1,0 +1,30 @@
+[package]
+name = "ocarina-viewport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Floem-embedded 3D viewport rendering for Ocarina, driving ocarina-rhi-wgpu directly into the editor's swapchain backbuffer via floem::Renderer::submit_wgpu_pass."
+
+[dependencies]
+# Floem path dep. Not workspace = true because ocarina-viewport is a
+# member of OUR root workspace (which doesn't list floem). Lapce-app's
+# Floem is normally git+rev-sourced; the [patch."https://github.com/lapce/floem"]
+# in our root Cargo.toml redirects it to the same local third_party/floem,
+# preserving type identity across the dep graph.
+floem = { path = "../../third_party/floem" }
+floem_renderer = { path = "../../third_party/floem/renderer" }
+
+ocarina-rhi.workspace = true
+ocarina-rhi-wgpu.workspace = true
+ocarina-scene.workspace = true
+ocarina-core.workspace = true
+
+bevy_ecs.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+wgpu = "27.0"
+
+[lints]
+workspace = true

@@ -108,6 +108,7 @@ ocarina-bake      = { path = "crates/ocarina-bake", version = "0.1.0" }
 ocarina-shader    = { path = "crates/ocarina-shader", version = "0.1.0" }
 ocarina-scene     = { path = "crates/ocarina-scene", version = "0.1.0" }
 ocarina-gameplay-api = { path = "crates/ocarina-gameplay-api", version = "0.1.0" }
+ocarina-viewport     = { path = "crates/ocarina-viewport", version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
@@ -130,6 +131,15 @@ cast_sign_loss = "allow"
 lsp-types = { git = "https://github.com/lapce/lsp-types", rev = "feaa1e2ec80975c9dadd400a238ceacf071058e6" }
 regalloc2 = { git = "https://github.com/bytecodealliance/regalloc2", rev = "5d79e12d0a93b10fc181f4da409b4671dd365228" }
 dpi = { git = "https://github.com/rust-windowing/winit", rev = "ee245c569d65fdeacf705ee5eedb564508d10ebe" }
+
+# Redirect Lapce's git-sourced Floem to our local fork in
+# third_party/floem. Without this, our Floem patches (most importantly
+# Renderer::submit_wgpu_pass — the direct-GPU compositing seam the
+# viewport panel uses) are bypassed when lapce-app pulls Floem from
+# its workspace's git+rev source.
+[patch."https://github.com/lapce/floem"]
+floem = { path = "third_party/floem" }
+floem-editor-core = { path = "third_party/floem/editor-core" }
 
 [profile.dev]
 opt-level = 1              # mild opt so editor tools are responsive

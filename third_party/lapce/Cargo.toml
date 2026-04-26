@@ -84,7 +84,11 @@ lapce-proxy = { path = "./lapce-proxy" }
 # path = "../floem"
 git = "https://github.com/lapce/floem"
 rev = "31fa8f444c37f4c314f47d88c23ffdbc25f2ab53"
-features = ["editor", "serde", "default-image-formats", "rfd-async-std"]
+# rfd-async-std was removed in our local Floem (subtree pinned to a
+# newer rev than this git rev); the [patch] in our root Cargo.toml
+# redirects this dep to third_party/floem/. File-dialog async runtime
+# selection now uses Floem's default.
+features = ["editor", "serde", "default-image-formats"]
 
 [workspace.dependencies.floem-editor-core]
 # path = "../floem/editor-core/"

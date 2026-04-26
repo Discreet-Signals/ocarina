@@ -750,6 +750,7 @@ impl Renderer for VgerRenderer {
                             view: &texture_view,
                             device: &self.device,
                             queue: &self.queue,
+                            adapter: &self.adapter,
                             rect,
                             format,
                         });

@@ -47,6 +47,7 @@ pub struct WgpuPassCtx<'a> {
     pub view: &'a wgpu::TextureView,
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
+    pub adapter: &'a wgpu::Adapter,
     pub rect: Rect,
     pub format: wgpu::TextureFormat,
 }

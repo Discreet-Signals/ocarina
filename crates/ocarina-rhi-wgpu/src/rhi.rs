@@ -247,6 +247,47 @@ impl WgpuRhi {
             .map(|t| &t.texture)
     }
 
+    /// Look up the underlying `wgpu::Buffer` for a handle.
+    ///
+    /// Needed when host code needs to drive a render pass against an
+    /// externally-owned target (e.g. the editor's swapchain backbuffer
+    /// surfaced through `floem::Renderer::submit_wgpu_pass`) and so
+    /// can't go through `submit(CommandList)` — `CommandList` only
+    /// references RHI-owned `TextureHandle`s for its color attachments.
+    #[must_use]
+    pub fn buffer(&self, handle: BufferHandle) -> Option<&wgpu::Buffer> {
+        self.pools
+            .buffers
+            .get(handle.raw().slot, handle.raw().generation)
+    }
+
+    /// Look up the underlying `wgpu::BindGroup` for a handle.
+    /// See [`buffer`](Self::buffer) for the use-case rationale.
+    #[must_use]
+    pub fn bind_group(&self, handle: BindGroupHandle) -> Option<&wgpu::BindGroup> {
+        self.pools
+            .bgs
+            .get(handle.raw().slot, handle.raw().generation)
+    }
+
+    /// Look up the underlying `wgpu::RenderPipeline` for a handle.
+    /// Returns `None` if the handle is invalid or refers to a compute
+    /// pipeline. See [`buffer`](Self::buffer) for the use-case rationale.
+    #[must_use]
+    pub fn graphics_pipeline(
+        &self,
+        handle: PipelineHandle,
+    ) -> Option<&wgpu::RenderPipeline> {
+        match self
+            .pools
+            .pipelines
+            .get(handle.raw().slot, handle.raw().generation)?
+        {
+            PipelineEntry::Graphics(p) => Some(p),
+            PipelineEntry::Compute(_) => None,
+        }
+    }
+
     // Internal: release resources from a destroy bucket.
     fn release_bucket(&mut self, bucket: &crate::destroy::FrameBucket) {
         for p in &bucket.buffers {
