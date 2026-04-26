@@ -452,4 +452,16 @@ impl floem_renderer::Renderer for Renderer {
             Renderer::Uninitialized { .. } => None,
         }
     }
+
+    fn submit_wgpu_pass(
+        &mut self,
+        rect: Rect,
+        pass: floem_renderer::WgpuPass,
+    ) {
+        match self {
+            Renderer::Active(r) => r.submit_wgpu_pass(rect, pass),
+            Renderer::TinySkia(r) => r.submit_wgpu_pass(rect, pass),
+            Renderer::Uninitialized { .. } => {}
+        }
+    }
 }

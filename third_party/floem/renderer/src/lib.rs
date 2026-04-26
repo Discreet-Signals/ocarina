@@ -30,6 +30,31 @@ pub use resvg::usvg;
 
 pub mod gpu_resources;
 
+/// Context handed to a user-provided wgpu render closure scheduled via
+/// [`Renderer::submit_wgpu_pass`].
+///
+/// The closure runs during the host's `finish()` phase, after the UI
+/// scene has been encoded into the backbuffer but before `present()`,
+/// so a render pass that uses `LoadOp::Load` against `view` paints on
+/// top of the UI without disturbing the surrounding panel chrome.
+///
+/// `rect` is the panel rectangle in **framebuffer pixels** (already
+/// scaled by the window's hidpi factor), not CSS pixels. Use it to
+/// configure the viewport / scissor on the render pass so output is
+/// clipped to the panel area even if the closure draws geometry that
+/// extends beyond it.
+pub struct WgpuPassCtx<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub rect: Rect,
+    pub format: wgpu::TextureFormat,
+}
+
+/// A boxed one-shot closure that renders directly into the host's
+/// swapchain target. See [`Renderer::submit_wgpu_pass`].
+pub type WgpuPass = Box<dyn for<'a> FnOnce(WgpuPassCtx<'a>) + 'static>;
+
 /// A reference to a parsed SVG tree paired with a cache key.
 ///
 /// # Example
@@ -225,6 +250,30 @@ pub trait Renderer {
     fn wgpu_adapter(&self) -> Option<&wgpu::Adapter> {
         None
     }
+
+    /// Schedule a user-provided render pass that runs directly against
+    /// the current frame's swapchain texture, after the UI scene is
+    /// encoded but before `present`. Lets a host (e.g. an embedded 3D
+    /// viewport panel) draw into the same backbuffer the UI is using —
+    /// no offscreen texture, no readback, no compositor copy.
+    ///
+    /// The closure is queued during the paint pass and drained in
+    /// [`finish`](Self::finish). It receives a [`WgpuPassCtx`] with the
+    /// target view, the backend's shared device + queue, the panel
+    /// rectangle in framebuffer pixels, and the target's texture
+    /// format. The closure is responsible for:
+    ///
+    /// 1. Building its own command encoder.
+    /// 2. Beginning a render pass with `LoadOp::Load` so the panel
+    ///    chrome painted by the UI underneath is preserved.
+    /// 3. Setting the viewport / scissor to the panel rect.
+    /// 4. Drawing whatever it likes.
+    /// 5. Submitting the encoder via `queue.submit(...)`.
+    ///
+    /// Default implementation is a no-op: backends that don't have a
+    /// shared wgpu surface (CPU-rendered tiny-skia, the uninitialized
+    /// renderer) silently drop the pass.
+    fn submit_wgpu_pass(&mut self, _rect: Rect, _pass: WgpuPass) {}
 
     /// Return a human-readable string identifying the renderer backend.
     ///

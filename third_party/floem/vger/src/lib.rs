@@ -6,7 +6,7 @@ use std::sync::mpsc::sync_channel;
 use anyhow::Result;
 use floem_renderer::gpu_resources::GpuResources;
 use floem_renderer::text::{Glyph, GlyphRunProps};
-use floem_renderer::{Img, Renderer, tiny_skia};
+use floem_renderer::{Img, Renderer, WgpuPass, WgpuPassCtx, tiny_skia};
 use floem_vger_rs::{GlyphImage, Image, PaintIndex, PixelFormat, Vger};
 use peniko::kurbo::{Size, Stroke};
 use peniko::{Blob, ImageData, LinearGradientPosition};
@@ -30,7 +30,6 @@ thread_local! {
 
 pub struct VgerRenderer {
     device: Arc<Device>,
-    #[allow(unused)]
     queue: Arc<Queue>,
     surface: Surface<'static>,
     vger: Vger,
@@ -42,6 +41,12 @@ pub struct VgerRenderer {
     capture: bool,
     font_embolden: f32,
     adapter: Adapter,
+    /// Queue of user-provided wgpu render closures pushed during the
+    /// paint pass via `Renderer::submit_wgpu_pass`. Drained in
+    /// `finish()` after Vger has encoded its UI scene to the
+    /// backbuffer, so each closure paints on top of the UI with
+    /// `LoadOp::Load`.
+    pending_wgpu_passes: Vec<(Rect, WgpuPass)>,
 }
 
 impl VgerRenderer {
@@ -119,6 +124,7 @@ impl VgerRenderer {
             capture: false,
             font_embolden,
             adapter,
+            pending_wgpu_passes: Vec::new(),
         })
     }
 
@@ -731,10 +737,33 @@ impl Renderer for VgerRenderer {
                 };
 
                 self.vger.encode(&desc);
+
+                // Drain user-provided wgpu render passes. Each closure
+                // sees the just-rendered UI in `texture_view` and paints
+                // on top with its own command encoder + render pass.
+                // Submission order on the queue is preserved, so closures
+                // run after Vger and before `present()`.
+                if !self.pending_wgpu_passes.is_empty() {
+                    let format = self.config.format;
+                    for (rect, pass) in self.pending_wgpu_passes.drain(..) {
+                        pass(WgpuPassCtx {
+                            view: &texture_view,
+                            device: &self.device,
+                            queue: &self.queue,
+                            rect,
+                            format,
+                        });
+                    }
+                }
+
                 frame.present();
             }
             None
         }
+    }
+
+    fn submit_wgpu_pass(&mut self, rect: Rect, pass: WgpuPass) {
+        self.pending_wgpu_passes.push((rect, pass));
     }
 
     fn push_layer(
