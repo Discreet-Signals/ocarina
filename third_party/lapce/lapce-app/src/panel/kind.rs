@@ -22,6 +22,9 @@ pub enum PanelKind {
     /// Ocarina 3D viewport — renders the live ECS scene through the
     /// shared wgpu device.
     Viewport,
+    ClaudeAgent,
+    CodexAgent,
+    OpencodeAgent,
 }
 
 impl PanelKind {
@@ -39,6 +42,9 @@ impl PanelKind {
             PanelKind::References => LapceIcons::REFERENCES,
             PanelKind::Implementation => LapceIcons::IMPLEMENTATION,
             PanelKind::Viewport => LapceIcons::START,
+            PanelKind::ClaudeAgent => LapceIcons::AGENT_CLAUDE,
+            PanelKind::CodexAgent => LapceIcons::AGENT_OPENAI,
+            PanelKind::OpencodeAgent => LapceIcons::AGENT_OPENCODE,
         }
     }
 
@@ -68,6 +74,9 @@ impl PanelKind {
             PanelKind::Implementation => PanelPosition::BottomLeft,
             // Viewport sits in the bottom area as a wide 3D scene panel.
             PanelKind::Viewport => PanelPosition::BottomLeft,
+            PanelKind::ClaudeAgent => PanelPosition::RightTop,
+            PanelKind::CodexAgent => PanelPosition::RightTop,
+            PanelKind::OpencodeAgent => PanelPosition::RightTop,
         }
     }
 }

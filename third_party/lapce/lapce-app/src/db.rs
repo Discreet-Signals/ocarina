@@ -371,6 +371,17 @@ impl LapceDb {
 
         use strum::IntoEnumIterator;
         for kind in PanelKind::iter() {
+            // Agent panels are opt-in: only `WindowTabData::new` adds them
+            // (and only for agents detected on PATH). Skip auto-insert so
+            // an uninstalled agent never shows up in the picker.
+            if matches!(
+                kind,
+                PanelKind::ClaudeAgent
+                    | PanelKind::CodexAgent
+                    | PanelKind::OpencodeAgent
+            ) {
+                continue;
+            }
             if kind.position(&panel_orders).is_none() {
                 let panels =
                     panel_orders.entry(kind.default_position()).or_default();

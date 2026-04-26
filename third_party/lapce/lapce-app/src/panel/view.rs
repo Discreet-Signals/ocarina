@@ -24,7 +24,7 @@ use super::{
     position::{PanelContainerPosition, PanelPosition},
     problem_view::problem_panel,
     source_control_view::source_control_panel,
-    terminal_view::terminal_panel,
+    terminal_view::{agent_panel, terminal_panel},
 };
 use crate::{
     app::{clickable_icon, clickable_icon_base},
@@ -36,6 +36,7 @@ use crate::{
         references_view::references_panel,
         viewport_view::viewport_panel,
     },
+    terminal::agents::AgentKind,
     window_tab::{DragContent, WindowTabData},
 };
 
@@ -304,8 +305,14 @@ pub fn panel_container_view(
                                 }
                             }
                             PanelContainerPosition::Bottom => {
+                                // Ocarina layout: this container is now
+                                // ABOVE the editor. The resize handle
+                                // sits on its BOTTOM edge, so dragging
+                                // down should grow the panel (not shrink
+                                // it like in upstream Lapce). Sign of
+                                // the y-delta is reversed accordingly.
                                 let new_size = current_size.height
-                                    - (pointer_event.pos.y - drag_start_point.y);
+                                    + (pointer_event.pos.y - drag_start_point.y);
                                 let maximized = panel.panel_bottom_maximized(false);
                                 if (maximized
                                     && new_size < available_size.height - 50.0)
@@ -355,7 +362,13 @@ pub fn panel_container_view(
                 let config = config.get();
                 s.absolute()
                     .apply_if(position == PanelContainerPosition::Bottom, |s| {
-                        s.width_pct(100.0).height(4.0).margin_top(-2.0)
+                        // Ocarina: handle on the BOTTOM edge of the
+                        // (now top-positioned) panel. Push the absolute
+                        // strip down to (panel_height - 2) so it
+                        // straddles the boundary between panel + editor.
+                        s.width_pct(100.0)
+                            .height(4.0)
+                            .margin_top(current_size.height as f32 - 2.0)
                     })
                     .apply_if(position == PanelContainerPosition::Left, |s| {
                         s.width(4.0)
@@ -428,8 +441,10 @@ pub fn panel_container_view(
             .apply_if(position == PanelContainerPosition::Bottom, |s| {
                 // Ocarina layout: bottom panel sits above the editor, so
                 // the separator is at the bottom of this container
-                // rather than the top.
+                // rather than the top. PANEL_BACKGROUND matches the
+                // L/R panels for consistent secondary-bg styling.
                 s.width_pct(100.0)
+                    .background(config.color(LapceColor::PANEL_BACKGROUND))
                     .apply_if(!is_maximized, |s| {
                         s.border_bottom(1.0).height(size as f32)
                     })
@@ -519,6 +534,18 @@ fn panel_view(
                 PanelKind::Viewport => {
                     viewport_panel(window_tab_data.clone(), position).into_any()
                 }
+                PanelKind::ClaudeAgent => {
+                    agent_panel(window_tab_data.clone(), AgentKind::Claude)
+                        .into_any()
+                }
+                PanelKind::CodexAgent => {
+                    agent_panel(window_tab_data.clone(), AgentKind::Codex)
+                        .into_any()
+                }
+                PanelKind::OpencodeAgent => {
+                    agent_panel(window_tab_data.clone(), AgentKind::Opencode)
+                        .into_any()
+                }
             };
             view.style(|s| s.size_pct(100.0, 100.0))
         },
@@ -552,7 +579,6 @@ fn panel_picker(
     let panels = panel.panels;
     let config = window_tab_data.common.config;
     let dragging = window_tab_data.common.dragging;
-    let is_bottom = position.is_bottom();
     let is_first = position.is_first();
     dyn_stack(
         move || {
@@ -576,6 +602,9 @@ fn panel_picker(
                 PanelKind::References => "References",
                 PanelKind::Implementation => "Implementation",
                 PanelKind::Viewport => "Viewport",
+                PanelKind::ClaudeAgent => "Claude",
+                PanelKind::CodexAgent => "Codex",
+                PanelKind::OpencodeAgent => "Opencode",
             };
             let icon = p.svg_name();
             let is_active = {
@@ -595,7 +624,14 @@ fn panel_picker(
                 clickable_icon(
                     || icon,
                     move || {
-                        window_tab_data.toggle_panel_visual(p);
+                        // Ocarina: clicking a tab only ever SELECTS it.
+                        // Upstream Lapce's `toggle_panel_visual` would
+                        // hide the panel on a second click of the
+                        // already-active tab, which is surprising
+                        // (clicking a tab to dismiss the entire
+                        // sidebar). `show_panel` activates without
+                        // collapsing.
+                        window_tab_data.show_panel(p);
                     },
                     || false,
                     || false,
@@ -623,23 +659,21 @@ fn panel_picker(
                 })
                 .style(|s| s.padding(1.0)),
                 label(|| "".to_string()).style(move |s| {
+                    // Active-tab indicator: horizontal underline (or
+                    // overline for second-position pickers) under the
+                    // icon. Used for all three panel containers — the
+                    // Bottom picker is now a horizontal tab strip, so
+                    // it gets the same underline treatment Left/Right
+                    // already had.
                     s.selectable(false)
                         .pointer_events_none()
                         .absolute()
                         .size_pct(100.0, 100.0)
-                        .apply_if(!is_bottom && is_first, |s| s.margin_top(2.0))
-                        .apply_if(!is_bottom && !is_first, |s| s.margin_top(-2.0))
-                        .apply_if(is_bottom && is_first, |s| s.margin_left(-2.0))
-                        .apply_if(is_bottom && !is_first, |s| s.margin_left(2.0))
+                        .apply_if(is_first, |s| s.margin_top(2.0))
+                        .apply_if(!is_first, |s| s.margin_top(-2.0))
                         .apply_if(is_active(), |s| {
-                            s.apply_if(!is_bottom && is_first, |s| {
-                                s.border_bottom(2.0)
-                            })
-                            .apply_if(!is_bottom && !is_first, |s| s.border_top(2.0))
-                            .apply_if(is_bottom && is_first, |s| s.border_left(2.0))
-                            .apply_if(is_bottom && !is_first, |s| {
-                                s.border_right(2.0)
-                            })
+                            s.apply_if(is_first, |s| s.border_bottom(2.0))
+                                .apply_if(!is_first, |s| s.border_top(2.0))
                         })
                         .border_color(
                             config
@@ -652,6 +686,11 @@ fn panel_picker(
         },
     )
     .style(move |s| {
+        // Picker icons flow horizontally in all three panel
+        // containers — Left, Right, and Bottom — matching upstream
+        // Lapce's L/R style. The picker→view separator is a thin
+        // horizontal line (border_bottom for the first position,
+        // border_top for the second).
         s.border_color(config.get().color(LapceColor::LAPCE_BORDER))
             .apply_if(
                 panels.with(|p| {
@@ -659,12 +698,7 @@ fn panel_picker(
                 }),
                 |s| s.hide(),
             )
-            // Picker icons flow horizontally for Bottom (top-of-panel
-            // strip), vertically for Left/Right (sidebar icon column).
-            .apply_if(!is_bottom, |s| s.flex_col())
-            .apply_if(is_bottom && is_first, |s| s.border_right(1.0))
-            .apply_if(is_bottom && !is_first, |s| s.border_left(1.0))
-            .apply_if(!is_bottom && is_first, |s| s.border_bottom(1.0))
-            .apply_if(!is_bottom && !is_first, |s| s.border_top(1.0))
+            .apply_if(is_first, |s| s.border_bottom(1.0))
+            .apply_if(!is_first, |s| s.border_top(1.0))
     })
 }

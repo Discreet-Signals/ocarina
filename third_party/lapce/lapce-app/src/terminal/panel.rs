@@ -115,6 +115,34 @@ impl TerminalPanelData {
         }
     }
 
+    /// Construct a panel with no initial tab. Used for agent panels so we
+    /// don't auto-spawn agent CLIs at app launch — the user clicks `+` to
+    /// start the first session.
+    pub fn new_empty(
+        workspace: Arc<LapceWorkspace>,
+        common: Rc<CommonData>,
+        main_split: MainSplitData,
+    ) -> Self {
+        let cx = common.scope;
+        let tab_info = TerminalTabInfo {
+            active: 0,
+            tabs: im::Vector::new(),
+        };
+        let tab_info = cx.create_rw_signal(tab_info);
+        let debug = RunDebugData::new(cx, common.breakpoints);
+        let breakline = cx.create_memo(move |_| None);
+
+        Self {
+            cx,
+            workspace,
+            tab_info,
+            debug,
+            breakline,
+            common,
+            main_split,
+        }
+    }
+
     pub fn active_tab(&self, tracked: bool) -> Option<TerminalTabData> {
         if tracked {
             self.tab_info.with(|info| {

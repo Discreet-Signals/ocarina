@@ -260,33 +260,10 @@ pub fn status(
                     config,
                 )
             },
-            {
-                let panel = panel.clone();
-                let icon = {
-                    let panel = panel.clone();
-                    move || {
-                        if panel.is_container_shown(
-                            &PanelContainerPosition::Bottom,
-                            true,
-                        ) {
-                            LapceIcons::LAYOUT_PANEL
-                        } else {
-                            LapceIcons::LAYOUT_PANEL_OFF
-                        }
-                    }
-                };
-                clickable_icon(
-                    icon,
-                    move || {
-                        panel
-                            .toggle_container_visual(&PanelContainerPosition::Bottom)
-                    },
-                    || false,
-                    || false,
-                    || "Toggle Bottom Panel",
-                    config,
-                )
-            },
+            // Bottom-panel toggle removed: in Ocarina the bottom
+            // container hosts the Viewport, which is a flagship
+            // first-class feature — always visible, can't be hidden
+            // from the status bar.
             {
                 let panel = panel.clone();
                 let icon = {

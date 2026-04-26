@@ -175,6 +175,11 @@ pub struct WindowTabData {
     pub file_explorer: FileExplorerData,
     pub panel: PanelData,
     pub terminal: TerminalPanelData,
+    /// One `TerminalPanelData` per AI-agent panel kind. Always contains
+    /// entries for every `AgentKind`, but each starts empty (no PTYs) so
+    /// nothing spawns until the user clicks `+` in that panel.
+    pub agent_terminals:
+        std::collections::HashMap<crate::terminal::agents::AgentKind, TerminalPanelData>,
     pub plugin: PluginData,
     pub code_action: RwSignal<CodeActionData>,
     pub code_lens: RwSignal<Option<ViewId>>,
@@ -509,6 +514,37 @@ impl WindowTabData {
             );
         }
 
+        // Build per-agent terminal panels (always all three, empty until
+        // the user opens the panel and clicks `+`). Then ensure detected
+        // agents appear in the right-side panel order so their picker
+        // icons show up next to the regular Terminal.
+        let mut agent_terminals = std::collections::HashMap::new();
+        for agent in crate::terminal::agents::AgentKind::ALL {
+            agent_terminals.insert(
+                *agent,
+                TerminalPanelData::new_empty(
+                    workspace.clone(),
+                    common.clone(),
+                    main_split.clone(),
+                ),
+            );
+        }
+        let detected_agents = crate::terminal::agents::detect_installed();
+        panel.panels.update(|order| {
+            let right_top = order
+                .entry(crate::panel::position::PanelPosition::RightTop)
+                .or_default();
+            for agent in crate::terminal::agents::AgentKind::ALL {
+                if !detected_agents.contains(agent) {
+                    continue;
+                }
+                let kind = agent.panel_kind();
+                if !right_top.iter().any(|k| k == &kind) {
+                    right_top.push_back(kind);
+                }
+            }
+        });
+
         let rename = RenameData::new(cx, main_split.editors, common.clone());
         let global_search = GlobalSearchData::new(cx, main_split.clone());
 
@@ -550,6 +586,7 @@ impl WindowTabData {
             palette,
             main_split,
             terminal,
+            agent_terminals,
             panel,
             file_explorer,
             code_action,
@@ -2636,9 +2673,12 @@ impl WindowTabData {
                 // in those cases.
                 self.panel.is_panel_visible(&kind)
             }
-            PanelKind::Terminal | PanelKind::SourceControl | PanelKind::Search => {
-                self.is_panel_focused(kind)
-            }
+            PanelKind::Terminal
+            | PanelKind::SourceControl
+            | PanelKind::Search
+            | PanelKind::ClaudeAgent
+            | PanelKind::CodexAgent
+            | PanelKind::OpencodeAgent => self.is_panel_focused(kind),
         };
         if should_hide {
             self.hide_panel(kind);

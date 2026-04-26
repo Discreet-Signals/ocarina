@@ -24,28 +24,92 @@ use crate::{
     debug::RunDebugMode,
     listener::Listener,
     terminal::{
-        panel::TerminalPanelData, tab::TerminalTabData, view::terminal_view,
+        agents::AgentKind, panel::TerminalPanelData, tab::TerminalTabData,
+        view::terminal_view,
     },
     window_tab::{Focus, WindowTabData},
 };
 
 pub fn terminal_panel(window_tab_data: Rc<WindowTabData>) -> impl View {
+    let terminal = window_tab_data.terminal.clone();
+    let workbench_command = window_tab_data.common.workbench_command;
+    panel_inner(
+        window_tab_data,
+        PanelKind::Terminal,
+        terminal,
+        LapceIcons::TERMINAL,
+        move || workbench_command.send(LapceWorkbenchCommand::NewTerminalTab),
+        "New Terminal",
+    )
+}
+
+pub fn agent_panel(
+    window_tab_data: Rc<WindowTabData>,
+    agent: AgentKind,
+) -> impl View {
+    let panel_kind = agent.panel_kind();
+    let terminal = window_tab_data
+        .agent_terminals
+        .get(&agent)
+        .cloned()
+        .expect("agent_terminals initialised for every AgentKind");
+    let workspace = window_tab_data.workspace.clone();
+    let panel = window_tab_data.panel.clone();
+    let focus = window_tab_data.common.focus;
+    let new_tab_terminal = terminal.clone();
+    panel_inner(
+        window_tab_data,
+        panel_kind,
+        terminal,
+        agent.icon_name(),
+        move || {
+            new_tab_terminal.new_tab(Some(agent.terminal_profile(&workspace)));
+            if !panel.is_panel_visible(&panel_kind) {
+                panel.show_panel(&panel_kind);
+            }
+            focus.set(Focus::Panel(panel_kind));
+        },
+        agent.new_tab_tooltip(),
+    )
+}
+
+fn panel_inner(
+    window_tab_data: Rc<WindowTabData>,
+    panel_kind: PanelKind,
+    terminal: TerminalPanelData,
+    default_tab_icon: &'static str,
+    on_add: impl Fn() + 'static,
+    add_tooltip: &'static str,
+) -> impl View {
     let focus = window_tab_data.common.focus;
     stack((
-        terminal_tab_header(window_tab_data.clone()),
-        terminal_tab_content(window_tab_data.clone()),
+        terminal_tab_header(
+            window_tab_data.clone(),
+            panel_kind,
+            terminal.clone(),
+            default_tab_icon,
+            on_add,
+            add_tooltip,
+        ),
+        terminal_tab_content(terminal),
     ))
     .on_event_cont(EventListener::PointerDown, move |_| {
-        if focus.get_untracked() != Focus::Panel(PanelKind::Terminal) {
-            focus.set(Focus::Panel(PanelKind::Terminal));
+        if focus.get_untracked() != Focus::Panel(panel_kind) {
+            focus.set(Focus::Panel(panel_kind));
         }
     })
     .style(|s| s.absolute().size_pct(100.0, 100.0).flex_col())
     .debug_name("Terminal Panel")
 }
 
-fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
-    let terminal = window_tab_data.terminal.clone();
+fn terminal_tab_header(
+    window_tab_data: Rc<WindowTabData>,
+    panel_kind: PanelKind,
+    terminal: TerminalPanelData,
+    default_tab_icon: &'static str,
+    on_add: impl Fn() + 'static,
+    add_tooltip: &'static str,
+) -> impl View {
     let config = window_tab_data.common.config;
     let focus = window_tab_data.common.focus;
     let active_index = move || terminal.tab_info.with(|info| info.active);
@@ -54,7 +118,6 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
     let header_height = create_rw_signal(0.0);
     let icon_width = create_rw_signal(0.0);
     let scroll_size = create_rw_signal(Size::ZERO);
-    let workbench_command = window_tab_data.common.workbench_command;
 
     stack((
         scroll(dyn_stack(
@@ -110,7 +173,7 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
                             return svg;
                         }
                     }
-                    LapceIcons::TERMINAL
+                    default_tab_icon
                 };
                 stack((
                     container({
@@ -173,9 +236,7 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
                                     0.0
                                 })
                                 .border_color(config.get().color(
-                                    if focus.get()
-                                        == Focus::Panel(PanelKind::Terminal)
-                                    {
+                                    if focus.get() == Focus::Panel(panel_kind) {
                                         LapceColor::LAPCE_TAB_ACTIVE_UNDERLINE
                                     } else {
                                         LapceColor::LAPCE_TAB_INACTIVE_UNDERLINE
@@ -225,12 +286,10 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
         }),
         container(clickable_icon(
             || LapceIcons::ADD,
-            move || {
-                workbench_command.send(LapceWorkbenchCommand::NewTerminalTab);
-            },
+            move || on_add(),
             || false,
             || false,
-            || "New Terminal",
+            move || add_tooltip,
             config,
         ))
         .on_resize(move |rect| {
@@ -251,9 +310,7 @@ fn terminal_tab_header(window_tab_data: Rc<WindowTabData>) -> impl View {
         }
     })
     .on_double_click(move |_| {
-        window_tab_data
-            .panel
-            .toggle_maximize(&crate::panel::kind::PanelKind::Terminal);
+        window_tab_data.panel.toggle_maximize(&panel_kind);
         EventPropagation::Stop
     })
     .style(move |s| {
@@ -348,8 +405,7 @@ fn terminal_tab_split(
     .style(|s| s.size_pct(100.0, 100.0))
 }
 
-fn terminal_tab_content(window_tab_data: Rc<WindowTabData>) -> impl View {
-    let terminal = window_tab_data.terminal.clone();
+fn terminal_tab_content(terminal: TerminalPanelData) -> impl View {
     tab(
         move || terminal.tab_info.with(|info| info.active),
         move || terminal.tab_info.with(|info| info.tabs.clone()),
