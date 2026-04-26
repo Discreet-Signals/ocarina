@@ -1,38 +1,24 @@
+use super::{v_stack_from_iter, Decorators};
+use crate::context::StyleCx;
+use crate::event::EventPropagation;
+use crate::id::ViewId;
+use crate::reactive::create_effect;
+use crate::style::Style;
+use crate::style_class;
+use crate::view::IntoView;
 use crate::{
-    AnyView, ViewId,
-    context::Phases,
-    custom_event,
-    event::{Event, EventPropagation, RouteKind},
-    prelude::*,
-    style::{Style, StyleCx, recalc::StyleReason},
-    style_class,
+    event::{Event, EventListener},
+    keyboard::{Key, NamedKey},
+    view::View,
 };
-use floem_reactive::{Effect, RwSignal, SignalGet, SignalUpdate};
-use ui_events::keyboard::{Key, KeyboardEvent, NamedKey};
+use floem_reactive::{create_rw_signal, RwSignal, SignalGet, SignalTrack, SignalUpdate};
 
 style_class!(pub ListClass);
 style_class!(pub ListItemClass);
 
-/// Event fired when a list's selection changes
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ListSelectionChanged {
-    /// The previous selection index
-    pub old_selection: Option<usize>,
-    /// The new selection index
-    pub new_selection: Option<usize>,
-}
-custom_event!(ListSelectionChanged);
-
-/// Event fired when a list item is accepted (Enter key or Space)
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ListAccept {
-    /// The accepted selection index
-    pub selection: Option<usize>,
-}
-custom_event!(ListAccept);
-
 enum ListUpdate {
-    SelectionChanged(Option<usize>),
+    SelectionChanged,
+    ScrollToSelected,
     Accept,
 }
 
@@ -47,29 +33,32 @@ pub(crate) struct Item {
 pub struct List {
     id: ViewId,
     selection: RwSignal<Option<usize>>,
+    onaccept: Option<Box<dyn Fn(Option<usize>)>>,
+    child: ViewId,
 }
 
 impl List {
-    /// Returns the index of the current selection (if any).
     pub fn selection(&self) -> RwSignal<Option<usize>> {
         self.selection
     }
 
-    /// Adds a callback to the [List] that is updated when the current selected item changes.
     pub fn on_select(self, on_select: impl Fn(Option<usize>) + 'static) -> Self {
-        Effect::new(move |_| {
+        create_effect(move |_| {
             let selection = self.selection.get();
             on_select(selection);
         });
+        self
+    }
+
+    pub fn on_accept(mut self, on_accept: impl Fn(Option<usize>) + 'static) -> Self {
+        self.onaccept = Some(Box::new(on_accept));
         self
     }
 }
 
 /// A list of views built from an iterator which remains static and always contains the same elements in the same order.
 ///
-/// A list is like a [stack](super::stack()) but also has built-in support for the selection of items:
-/// up and down using arrow keys, top and bottom control using the home and end keys,
-/// and "acceptance" of an item using the Enter key.
+/// A list is like a [stack](super::stack()) but also has built-in support for the selection of items: up and down using arrow keys, top and bottom control using the home and end keys, and for the "acceptance" of an item using the Enter key.
 ///
 /// ## Example
 /// ```rust
@@ -85,113 +74,103 @@ where
     V: IntoView + 'static,
 {
     let list_id = ViewId::new();
-    let selection = RwSignal::new(Some(0));
-    Effect::new(move |old_sel: Option<Option<usize>>| {
-        let new_sel = selection.get();
-        let old_sel = old_sel.flatten();
-
-        if old_sel != new_sel {
-            // Dispatch custom event when selection changes
-            list_id.route_event(
-                Event::new_custom(ListSelectionChanged {
-                    old_selection: old_sel,
-                    new_selection: new_sel,
-                }),
-                RouteKind::Directed {
-                    target: list_id.get_element_id(),
-                    phases: Phases::TARGET,
-                },
-            );
-            list_id.update_state(ListUpdate::SelectionChanged(old_sel));
-        }
-
-        new_sel
+    let selection = create_rw_signal(None);
+    create_effect(move |_| {
+        selection.track();
+        list_id.update_state(ListUpdate::SelectionChanged);
     });
-    let children = iterator
-        .into_iter()
-        .enumerate()
-        .map(move |(index, v)| {
-            let item_id = ViewId::new();
-            let v = v.into_view().class(ListItemClass);
-            let child = v.id();
-            item_id.set_children([v]);
-            // Let row styles resolve against the list container so structural
-            // selectors like `.even()`/`.odd()` index across list rows instead
-            // of the internal per-row Item wrapper.
-            child.set_style_parent(list_id);
-            Item {
-                id: item_id,
-                selection,
-                index,
-                child,
+    let stack = v_stack_from_iter(iterator.into_iter().enumerate().map(move |(index, v)| {
+        let id = ViewId::new();
+        let v = v.into_view().class(ListItemClass);
+        let child = v.id();
+        id.set_children([v]);
+        Item {
+            id,
+            selection,
+            index,
+            child,
+        }
+        .on_click_stop(move |_| {
+            if selection.get_untracked() != Some(index) {
+                selection.set(Some(index));
+                list_id.update_state(ListUpdate::Accept);
+                list_id.update_state(ListUpdate::ScrollToSelected);
             }
-            .action(move || {
-                if selection.get_untracked() != Some(index) {
-                    selection.set(Some(index));
-                    list_id.update_state(ListUpdate::Accept);
-                }
-            })
         })
-        .map(|v| -> Box<dyn View> { v.into_any() })
-        .collect::<Vec<AnyView>>();
-    let length = children.len();
-    list_id.set_children_vec(children);
+    }))
+    .style(|s| s.width_full().height_full());
+    let length = stack.id().children().len();
+    let child = stack.id();
+    list_id.set_children([stack]);
     List {
         id: list_id,
         selection,
+        child,
+        onaccept: None,
     }
-    .on_event(
-        listener::KeyDown,
-        move |_cx, KeyboardEvent { key, .. }| match key {
-            Key::Named(NamedKey::Home) => {
-                if length > 0 {
-                    selection.set(Some(0));
+    .keyboard_navigable()
+    .on_event(EventListener::KeyDown, move |e| {
+        if let Event::KeyDown(key_event) = e {
+            match key_event.key.logical_key {
+                Key::Named(NamedKey::Home) => {
+                    if length > 0 {
+                        selection.set(Some(0));
+                        list_id.update_state(ListUpdate::ScrollToSelected);
+                    }
+                    EventPropagation::Stop
                 }
-                EventPropagation::Stop
-            }
-            Key::Named(NamedKey::End) => {
-                if length > 0 {
-                    selection.set(Some(length - 1));
+                Key::Named(NamedKey::End) => {
+                    if length > 0 {
+                        selection.set(Some(length - 1));
+                        list_id.update_state(ListUpdate::ScrollToSelected);
+                    }
+                    EventPropagation::Stop
                 }
-                EventPropagation::Stop
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                let current = selection.get_untracked();
-                match current {
-                    Some(i) => {
-                        if i > 0 {
-                            selection.set(Some(i - 1));
+                Key::Named(NamedKey::ArrowUp) => {
+                    let current = selection.get_untracked();
+                    match current {
+                        Some(i) => {
+                            if i > 0 {
+                                selection.set(Some(i - 1));
+                                list_id.update_state(ListUpdate::ScrollToSelected);
+                            }
+                        }
+                        None => {
+                            if length > 0 {
+                                selection.set(Some(length - 1));
+                                list_id.update_state(ListUpdate::ScrollToSelected);
+                            }
                         }
                     }
-                    None => {
-                        if length > 0 {
-                            selection.set(Some(length - 1));
-                        }
-                    }
+                    EventPropagation::Stop
                 }
-                EventPropagation::Stop
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                let current = selection.get_untracked();
-                match current {
-                    Some(i) => {
-                        if i < length - 1 {
-                            selection.set(Some(i + 1));
-                        }
-                    }
-                    None => {
-                        if length > 0 {
-                            selection.set(Some(0));
-                        }
-                    }
+                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                    list_id.update_state(ListUpdate::Accept);
+                    EventPropagation::Stop
                 }
-                EventPropagation::Stop
+                Key::Named(NamedKey::ArrowDown) => {
+                    let current = selection.get_untracked();
+                    match current {
+                        Some(i) => {
+                            if i < length - 1 {
+                                selection.set(Some(i + 1));
+                                list_id.update_state(ListUpdate::ScrollToSelected);
+                            }
+                        }
+                        None => {
+                            if length > 0 {
+                                selection.set(Some(0));
+                                list_id.update_state(ListUpdate::ScrollToSelected);
+                            }
+                        }
+                    }
+                    EventPropagation::Stop
+                }
+                _ => EventPropagation::Continue,
             }
-            _ => EventPropagation::Continue,
-        },
-    )
-    .on_event_stop(listener::Click, move |_cx, _| {
-        list_id.update_state(ListUpdate::Accept);
+        } else {
+            EventPropagation::Continue
+        }
     })
     .class(ListClass)
 }
@@ -201,37 +180,21 @@ impl View for List {
         self.id
     }
 
-    fn view_style(&self) -> Option<Style> {
-        Some(Style::new().flex_col())
-    }
-
     fn update(&mut self, _cx: &mut crate::context::UpdateCx, state: Box<dyn std::any::Any>) {
         if let Ok(change) = state.downcast::<ListUpdate>() {
             match *change {
-                ListUpdate::SelectionChanged(old_selection) => {
-                    if let Some(index) = self.selection.get_untracked()
-                        && let Some(child) = self.id.children().get(index)
-                    {
-                        child.request_style(StyleReason::style_pass());
-                        child.scroll_to(None);
-                    }
-                    if let Some(index) = old_selection
-                        && let Some(child) = self.id.children().get(index)
-                    {
-                        child.request_style(StyleReason::style_pass());
+                ListUpdate::SelectionChanged => {
+                    self.id.request_style_recursive();
+                }
+                ListUpdate::ScrollToSelected => {
+                    if let Some(index) = self.selection.get_untracked() {
+                        self.child.children()[index].scroll_to(None);
                     }
                 }
                 ListUpdate::Accept => {
-                    let selection = self.selection.get_untracked();
-
-                    // Dispatch custom event
-                    self.id.route_event(
-                        Event::new_custom(ListAccept { selection }),
-                        RouteKind::Directed {
-                            target: self.id.get_element_id(),
-                            phases: Phases::TARGET,
-                        },
-                    );
+                    if let Some(on_accept) = &self.onaccept {
+                        on_accept(self.selection.get_untracked());
+                    }
                 }
             }
         }
@@ -248,21 +211,22 @@ impl View for Item {
     }
 
     fn debug_name(&self) -> std::borrow::Cow<'static, str> {
-        "List Item".into()
+        "Item".into()
     }
 
-    fn style_pass(&mut self, _cx: &mut StyleCx<'_>) {
+    fn style_pass(&mut self, cx: &mut StyleCx<'_>) {
         let selected = self.selection.get_untracked();
         if Some(self.index) == selected {
-            self.child.parent_set_selected();
+            cx.save();
+            cx.selected();
+            cx.style_view(self.child);
+            cx.restore();
         } else {
-            self.child.parent_clear_selected();
+            cx.style_view(self.child);
         }
     }
 }
 
-/// A trait that adds a `list` method to any generic type `T` that implements [`IntoIterator`] where
-/// `T::Item` implements [IntoView].
 pub trait ListExt {
     fn list(self) -> List;
 }

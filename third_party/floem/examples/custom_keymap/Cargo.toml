@@ -1,7 +1,0 @@
-[package]
-name = "custom_keymap"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-floem = { path = "../..", features = ["editor"] }

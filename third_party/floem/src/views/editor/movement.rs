@@ -8,22 +8,22 @@ use floem_editor_core::{
     movement::{LinePosition, Movement},
     register::Register,
     selection::{SelRegion, Selection},
-    soft_tab::{SnapDirection, snap_to_soft_tab},
+    soft_tab::{snap_to_soft_tab, SnapDirection},
 };
 
 use super::{
-    Editor,
     actions::CommonAction,
     visual_line::{RVLine, VLineInfo},
+    Editor,
 };
 
-/// Move a selection region by a given movement.
-///
+/// Move a selection region by a given movement.  
 /// Much of the time, this will just be a matter of moving the cursor, but
 /// some movements may depend on the current selection.
 fn move_region(
     view: &Editor,
     region: &SelRegion,
+    affinity: &mut CursorAffinity,
     count: usize,
     modify: bool,
     movement: &Movement,
@@ -38,16 +38,13 @@ fn move_region(
         match movement {
             Movement::Left | Movement::Up => {
                 let leftmost = region.min();
-                (
-                    count - 1,
-                    SelRegion::new(leftmost, leftmost, region.affinity, region.horiz),
-                )
+                (count - 1, SelRegion::new(leftmost, leftmost, region.horiz))
             }
             Movement::Right | Movement::Down => {
                 let rightmost = region.max();
                 (
                     count - 1,
-                    SelRegion::new(rightmost, rightmost, region.affinity, region.horiz),
+                    SelRegion::new(rightmost, rightmost, region.horiz),
                 )
             }
             _ => (count, *region),
@@ -56,13 +53,11 @@ fn move_region(
         (count, *region)
     };
 
-    let mut affinity = region.affinity;
-
     let (end, horiz) = move_offset(
         view,
         region.end,
         region.horiz.as_ref(),
-        &mut affinity,
+        affinity,
         count,
         movement,
         mode,
@@ -71,12 +66,13 @@ fn move_region(
         true => region.start,
         false => end,
     };
-    SelRegion::new(start, end, affinity, horiz)
+    SelRegion::new(start, end, horiz)
 }
 
 pub fn move_selection(
     view: &Editor,
     selection: &Selection,
+    affinity: &mut CursorAffinity,
     count: usize,
     modify: bool,
     movement: &Movement,
@@ -84,7 +80,9 @@ pub fn move_selection(
 ) -> Selection {
     let mut new_selection = Selection::new();
     for region in selection.regions() {
-        new_selection.add_region(move_region(view, region, count, modify, movement, mode));
+        new_selection.add_region(move_region(
+            view, region, affinity, count, modify, movement, mode,
+        ));
     }
     new_selection
 }
@@ -225,9 +223,8 @@ fn atomic_soft_tab_width_for_offset(ed: &Editor, offset: usize) -> Option<usize>
     }
 }
 
-/// Move the offset to the left by `count` amount.
-///
-/// If `soft_tab_width` is `Some` (and greater than 1) then the offset will snap to the soft tab.
+/// Move the offset to the left by `count` amount.  
+/// If `soft_tab_width` is `Some` (and greater than 1) then the offset will snap to the soft tab.  
 fn move_left(
     ed: &Editor,
     offset: usize,
@@ -238,15 +235,15 @@ fn move_left(
     let rope_text = ed.rope_text();
     let mut new_offset = rope_text.move_left(offset, mode, count);
 
-    if let Some(soft_tab_width) = atomic_soft_tab_width_for_offset(ed, offset)
-        && soft_tab_width > 1
-    {
-        new_offset = snap_to_soft_tab(
-            rope_text.text(),
-            new_offset,
-            SnapDirection::Left,
-            soft_tab_width,
-        );
+    if let Some(soft_tab_width) = atomic_soft_tab_width_for_offset(ed, offset) {
+        if soft_tab_width > 1 {
+            new_offset = snap_to_soft_tab(
+                rope_text.text(),
+                new_offset,
+                SnapDirection::Left,
+                soft_tab_width,
+            );
+        }
     }
 
     *affinity = CursorAffinity::Forward;
@@ -266,18 +263,25 @@ fn move_right(
     let rope_text = view.rope_text();
     let mut new_offset = rope_text.move_right(offset, mode, count);
 
-    if let Some(soft_tab_width) = atomic_soft_tab_width_for_offset(view, offset)
-        && soft_tab_width > 1
-    {
-        new_offset = snap_to_soft_tab(
-            rope_text.text(),
-            new_offset,
-            SnapDirection::Right,
-            soft_tab_width,
-        );
+    if let Some(soft_tab_width) = atomic_soft_tab_width_for_offset(view, offset) {
+        if soft_tab_width > 1 {
+            new_offset = snap_to_soft_tab(
+                rope_text.text(),
+                new_offset,
+                SnapDirection::Right,
+                soft_tab_width,
+            );
+        }
     }
 
-    *affinity = CursorAffinity::Backward;
+    let (rvline, col) = view.rvline_col_of_offset(offset, *affinity);
+    let info = view.rvline_info(rvline);
+
+    *affinity = if col == info.last_col(&view.text_prov(), false) {
+        CursorAffinity::Forward
+    } else {
+        CursorAffinity::Backward
+    };
 
     new_offset
 }
@@ -312,8 +316,7 @@ fn find_prev_rvline(view: &Editor, start: RVLine, count: usize) -> Option<RVLine
     info.map(|info| info.rvline)
 }
 
-/// Move the offset up by `count` amount.
-///
+/// Move the offset up by `count` amount.  
 /// `count` may be zero, because moving up in a selection just jumps to the start of the selection.
 fn move_up(
     view: &Editor,
@@ -347,15 +350,15 @@ fn move_up(
     let horiz =
         horiz.unwrap_or_else(|| ColPosition::Col(view.line_point_of_offset(offset, *affinity).x));
     let col = view.rvline_horiz_col(rvline, &horiz, mode != Mode::Normal);
-    let new_offset = view.offset_of_line_col(rvline.line, col);
 
-    let info = view.rvline_info(rvline);
-
-    *affinity = if new_offset == info.interval.start {
+    // TODO: this should maybe be doing `new_offset == info.interval.start`?
+    *affinity = if col == 0 {
         CursorAffinity::Forward
     } else {
         CursorAffinity::Backward
     };
+
+    let new_offset = view.offset_of_line_col(rvline.line, col);
 
     (new_offset, horiz)
 }
@@ -405,7 +408,7 @@ fn find_next_rvline_info(
             continue;
         }
 
-        if next_info.interval.start < offset || next_info.rvline == start {
+        if next_info.interval.start <= offset {
             // If we're on or before our current visual line then we skip it
             continue;
         }
@@ -423,8 +426,7 @@ fn find_next_rvline_info(
     None
 }
 
-/// Move the offset down by `count` amount.
-///
+/// Move the offset down by `count` amount.  
 /// `count` may be zero, because moving down in a selection just jumps to the end of the selection.
 fn move_down(
     view: &Editor,
@@ -561,8 +563,7 @@ fn to_line(
     (new_offset, horiz)
 }
 
-/// Move the current cursor.
-///
+/// Move the current cursor.  
 /// This will signal-update the document for some motion modes.
 pub fn move_cursor(
     ed: &Editor,
@@ -574,10 +575,7 @@ pub fn move_cursor(
     register: &mut Register,
 ) {
     match cursor.mode {
-        CursorMode::Normal {
-            offset,
-            mut affinity,
-        } => {
+        CursorMode::Normal(offset) => {
             let count = if let Some(motion_mode) = cursor.motion_mode.as_ref() {
                 count.max(motion_mode.count())
             } else {
@@ -587,7 +585,7 @@ pub fn move_cursor(
                 ed,
                 offset,
                 cursor.horiz.as_ref(),
-                &mut affinity,
+                &mut cursor.affinity,
                 count,
                 movement,
                 Mode::Normal,
@@ -597,7 +595,7 @@ pub fn move_cursor(
                     ed,
                     new_offset,
                     None,
-                    &mut affinity,
+                    &mut cursor.affinity,
                     1,
                     &Movement::Right,
                     Mode::Insert,
@@ -623,24 +621,16 @@ pub fn move_cursor(
                 );
                 cursor.motion_mode = None;
             } else {
-                cursor.mode = CursorMode::Normal {
-                    offset: new_offset,
-                    affinity,
-                };
+                cursor.mode = CursorMode::Normal(new_offset);
                 cursor.horiz = horiz;
             }
         }
-        CursorMode::Visual {
-            start,
-            end,
-            mode,
-            mut affinity,
-        } => {
+        CursorMode::Visual { start, end, mode } => {
             let (new_offset, horiz) = move_offset(
                 ed,
                 end,
                 cursor.horiz.as_ref(),
-                &mut affinity,
+                &mut cursor.affinity,
                 count,
                 movement,
                 Mode::Visual(VisualMode::Normal),
@@ -649,12 +639,19 @@ pub fn move_cursor(
                 start,
                 end: new_offset,
                 mode,
-                affinity,
             };
             cursor.horiz = horiz;
         }
         CursorMode::Insert(ref selection) => {
-            let selection = move_selection(ed, selection, count, modify, movement, Mode::Insert);
+            let selection = move_selection(
+                ed,
+                selection,
+                &mut cursor.affinity,
+                count,
+                modify,
+                movement,
+                Mode::Insert,
+            );
             cursor.set_insert(selection);
         }
     }
@@ -675,44 +672,36 @@ pub fn do_multi_selection(view: &Editor, cursor: &mut Cursor, cmd: &MultiSelecti
         }
         InsertCursorAbove => {
             if let CursorMode::Insert(mut selection) = cursor.mode.clone() {
-                let (offset, mut affinity) = selection
-                    .first()
-                    .map(|s| (s.end, s.affinity))
-                    .unwrap_or((0, CursorAffinity::Backward));
-
+                let offset = selection.first().map(|s| s.end).unwrap_or(0);
                 let (new_offset, _) = move_offset(
                     view,
                     offset,
                     cursor.horiz.as_ref(),
-                    &mut affinity,
+                    &mut cursor.affinity,
                     1,
                     &Movement::Up,
                     Mode::Insert,
                 );
                 if new_offset != offset {
-                    selection.add_region(SelRegion::new(new_offset, new_offset, affinity, None));
+                    selection.add_region(SelRegion::new(new_offset, new_offset, None));
                 }
                 cursor.set_insert(selection);
             }
         }
         InsertCursorBelow => {
             if let CursorMode::Insert(mut selection) = cursor.mode.clone() {
-                let (offset, mut affinity) = selection
-                    .last()
-                    .map(|s| (s.end, s.affinity))
-                    .unwrap_or((0, CursorAffinity::Backward));
-
+                let offset = selection.last().map(|s| s.end).unwrap_or(0);
                 let (new_offset, _) = move_offset(
                     view,
                     offset,
                     cursor.horiz.as_ref(),
-                    &mut affinity,
+                    &mut cursor.affinity,
                     1,
                     &Movement::Down,
                     Mode::Insert,
                 );
                 if new_offset != offset {
-                    selection.add_region(SelRegion::new(new_offset, new_offset, affinity, None));
+                    selection.add_region(SelRegion::new(new_offset, new_offset, None));
                 }
                 cursor.set_insert(selection);
             }
@@ -729,12 +718,7 @@ pub fn do_multi_selection(view: &Editor, cursor: &mut Cursor, cmd: &MultiSelecti
                         } else {
                             rope_text.line_end_offset(line, true)
                         };
-                        new_selection.add_region(SelRegion::new(
-                            offset,
-                            offset,
-                            CursorAffinity::Backward,
-                            None,
-                        ));
+                        new_selection.add_region(SelRegion::new(offset, offset, None));
                     }
                 }
                 cursor.set_insert(new_selection);
@@ -748,12 +732,7 @@ pub fn do_multi_selection(view: &Editor, cursor: &mut Cursor, cmd: &MultiSelecti
                     let start = rope_text.offset_of_line(start_line);
                     let end_line = rope_text.line_of_offset(region.max());
                     let end = rope_text.offset_of_line(end_line + 1);
-                    new_selection.add_region(SelRegion::new(
-                        start,
-                        end,
-                        CursorAffinity::Backward,
-                        None,
-                    ));
+                    new_selection.add_region(SelRegion::new(start, end, None));
                 }
                 cursor.set_insert(new_selection);
             }
@@ -765,7 +744,7 @@ pub fn do_multi_selection(view: &Editor, cursor: &mut Cursor, cmd: &MultiSelecti
             // However, we haven't included a `find` in floem-editor
         }
         SelectAll => {
-            let new_selection = Selection::region(0, rope_text.len(), CursorAffinity::Forward);
+            let new_selection = Selection::region(0, rope_text.len());
             cursor.set_insert(new_selection);
         }
     }
@@ -809,13 +788,10 @@ mod tests {
     use lapce_xi_rope::Rope;
     use peniko::kurbo::{Rect, Size};
 
-    use crate::{
-        headless::TestRoot,
-        views::editor::{
-            movement::{correct_crlf, end_of_line, move_down, move_up},
-            text::SimpleStyling,
-            text_document::TextDocument,
-        },
+    use crate::views::editor::{
+        movement::{correct_crlf, end_of_line, move_down, move_up},
+        text::SimpleStyling,
+        text_document::TextDocument,
     };
 
     use super::Editor;
@@ -855,7 +831,6 @@ mod tests {
 
     #[test]
     fn test_end_of_line() {
-        let _root = TestRoot::new();
         let ed = make_ed("abc\ndef\nghi");
         let mut aff = CursorAffinity::Backward;
         assert_eq!(end_of_line(&ed, &mut aff, 0, Mode::Insert).0, 3);
@@ -891,7 +866,6 @@ mod tests {
 
     #[test]
     fn test_move_down() {
-        let _root = TestRoot::new();
         let ed = make_ed("abc\n\n\ndef\n\nghi");
 
         let mut aff = CursorAffinity::Forward;
@@ -912,7 +886,6 @@ mod tests {
 
     #[test]
     fn test_move_up() {
-        let _root = TestRoot::new();
         let ed = make_ed("abc\n\n\ndef\n\nghi");
 
         let mut aff = CursorAffinity::Forward;

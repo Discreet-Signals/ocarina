@@ -6,36 +6,36 @@
 //! The [`DropdownCustomStyle`] struct allows for easy and advanced customization of the dropdown's appearance.
 use std::{any::Any, rc::Rc};
 
-use floem_reactive::{Effect, RwSignal, Scope, SignalGet, SignalUpdate, UpdaterEffect};
-use imbl::OrdMap;
-use peniko::kurbo::{Point, Size};
+use floem_reactive::{
+    as_child_of_current_scope, create_effect, create_updater, Scope, SignalGet, SignalUpdate,
+};
+use peniko::{
+    color::palette,
+    kurbo::{Point, Rect},
+};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::{
-    AnyView,
-    action::{add_overlay, exec_after_animation_frame, remove_overlay},
-    context::{Phases, VisualChangedListener},
-    custom_event,
-    event::{Event, EventPropagation, Phase, RouteKind, listener},
-    prelude::{EventListenerTrait, ViewTuple},
+    action::{add_overlay, remove_overlay},
+    event::{Event, EventListener, EventPropagation},
+    id::ViewId,
     prop, prop_extractor,
-    style::{CustomStylable, CustomStyle, Style, StyleClass},
+    style::{CustomStylable, CustomStyle, Style, StyleClass, Width},
     style_class,
-    view::{IntoView, View, ViewId},
-    views::{ContainerExt, Decorators, Label, ScrollExt, svg},
+    unit::PxPctAuto,
+    view::{default_compute_layout, IntoView, View},
+    views::{container, scroll, stack, svg, text, Decorators},
+    AnyView,
 };
 
 use super::list;
 
 type ChildFn<T> = dyn Fn(T) -> (AnyView, Scope);
+type ListViewFn<T> = Rc<dyn Fn(&dyn Fn(T) -> AnyView) -> AnyView>;
 
 style_class!(
     /// A Style class that is applied to all dropdowns.
     pub DropdownClass
-);
-
-style_class!(
-    /// A Style class that is applied to all dropdown previews.
-    pub DropdownPreviewClass
 );
 
 prop!(
@@ -45,37 +45,6 @@ prop!(
 prop_extractor!(DropdownStyle {
     close_on_accept: CloseOnAccept,
 });
-
-/// Event fired when the dropdown open state changes
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DropdownOpenChanged {
-    /// Whether the dropdown is now open
-    pub is_open: bool,
-}
-impl DropdownOpenChanged {
-    fn extract_inner(&self) -> &bool {
-        &self.is_open
-    }
-}
-custom_event!(
-    DropdownOpenChanged,
-    bool,
-    DropdownOpenChanged::extract_inner
-);
-
-/// Event fired when an item is accepted/selected from the dropdown.
-/// Contains the selected value.
-///
-/// Note: Prefer using [`Dropdown::on_accept`] instead of listening for this event directly,
-/// as it provides properly typed access to the selected value.
-///
-/// If you instead manually specify the incorrect type, a downcast will fail and your handler will not run.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DropdownAccept<T: 'static> {
-    /// The accepted value
-    pub value: T,
-}
-custom_event!(DropdownAccept<T>);
 
 /// # A customizable dropdown view for selecting an item from a list.
 ///
@@ -154,7 +123,7 @@ custom_event!(DropdownAccept<T>);
 /// ```rust
 /// # use strum::IntoEnumIterator;
 /// #
-/// # #[derive(Clone, Debug, strum::EnumIter, PartialEq)]
+/// # #[derive(Clone, strum::EnumIter)]
 /// # enum Character {
 /// #     Ori,
 /// #     Naru,
@@ -202,12 +171,14 @@ pub struct Dropdown<T: 'static> {
     main_view: ViewId,
     main_view_scope: Scope,
     main_fn: Box<ChildFn<T>>,
-    list_item_fn: Rc<dyn Fn(&T) -> AnyView>,
+    list_view: ListViewFn<T>,
+    list_item_fn: Rc<dyn Fn(T) -> AnyView>,
+    list_style: Style,
     overlay_id: Option<ViewId>,
     window_origin: Option<Point>,
+    on_accept: Option<Box<dyn Fn(T)>>,
+    on_open: Option<Box<dyn Fn(bool)>>,
     style: DropdownStyle,
-    index_to_item: OrdMap<usize, T>,
-    width: RwSignal<f64>,
 }
 
 enum Message {
@@ -217,61 +188,62 @@ enum Message {
     ListSelect(Box<dyn Any>),
 }
 
-impl<T: 'static + Clone + PartialEq + core::fmt::Debug> View for Dropdown<T> {
+impl<T: 'static + Clone> View for Dropdown<T> {
     fn id(&self) -> ViewId {
         self.id
     }
 
     fn debug_name(&self) -> std::borrow::Cow<'static, str> {
-        "Dropdown".into()
+        "DropDown".into()
     }
 
     fn style_pass(&mut self, cx: &mut crate::context::StyleCx<'_>) {
         if self.style.read(cx) {
-            cx.window_state.request_paint(self.id);
+            cx.app_state_mut().request_paint(self.id);
         }
+        self.list_style = cx
+            .style()
+            .get_nested_map(scroll::ScrollClass::key())
+            .unwrap_or_default();
+
+        for child in self.id.children() {
+            cx.style_view(child);
+        }
+    }
+
+    fn compute_layout(&mut self, cx: &mut crate::context::ComputeLayoutCx) -> Option<Rect> {
+        self.window_origin = Some(cx.window_origin);
+
+        default_compute_layout(self.id, cx)
     }
 
     fn update(&mut self, cx: &mut crate::context::UpdateCx, state: Box<dyn std::any::Any>) {
         if let Ok(state) = state.downcast::<Message>() {
             match *state {
-                Message::OpenState(true) => self.open_dropdown(),
-                Message::OpenState(false) => {
-                    if let Some(overlay_id) = self.overlay_id
-                        && cx.window_state.is_focused(overlay_id)
-                    {
-                        self.id.request_focus();
-                    }
-                    self.close_dropdown()
-                }
+                Message::OpenState(true) => self.open_dropdown(cx),
+                Message::OpenState(false) => self.close_dropdown(),
                 Message::ListFocusLost => self.close_dropdown(),
                 Message::ListSelect(val) => {
                     if let Ok(val) = val.downcast::<T>() {
                         if self.style.close_on_accept() {
                             self.close_dropdown();
                         }
-                        self.id.route_event(
-                            Event::new_custom(DropdownAccept { value: *val }),
-                            RouteKind::Directed {
-                                target: self.id.get_element_id(),
-                                phases: Phases::TARGET,
-                            },
-                        );
+                        if let Some(on_select) = &self.on_accept {
+                            on_select(*val);
+                        }
                     }
                 }
                 Message::ActiveElement(val) => {
                     if let Ok(val) = val.downcast::<T>() {
                         let old_child_scope = self.main_view_scope;
                         let old_main_view = self.main_view;
-                        self.current_value = *val.clone();
                         let (main_view, main_view_scope) = (self.main_fn)(*val);
                         let main_view_id = main_view.id();
-                        main_view_id.add_class(DropdownPreviewClass::class_ref());
                         self.id.set_children([main_view]);
                         self.main_view = main_view_id;
                         self.main_view_scope = main_view_scope;
 
-                        cx.window_state.remove_view(old_main_view);
+                        cx.app_state_mut().remove_view(old_main_view);
                         old_child_scope.dispose();
                         self.id.request_all();
                     }
@@ -280,24 +252,32 @@ impl<T: 'static + Clone + PartialEq + core::fmt::Debug> View for Dropdown<T> {
         }
     }
 
-    fn event(&mut self, cx: &mut crate::context::EventCx) -> EventPropagation {
-        if let Some(new_vis) = VisualChangedListener::extract(&cx.event) {
-            self.window_origin = Some(new_vis.new_visual_aabb.origin());
-            self.width.set(new_vis.new_visual_aabb.width());
-        }
-
-        if cx.event.is_pointer_down()
-            || (cx.phase == Phase::Target && cx.event.is_keyboard_trigger())
-        {
-            self.swap_state();
-            return EventPropagation::Stop;
+    fn event_before_children(
+        &mut self,
+        _cx: &mut crate::context::EventCx,
+        event: &Event,
+    ) -> EventPropagation {
+        match event {
+            Event::PointerDown(_) => {
+                self.swap_state();
+                return EventPropagation::Stop;
+            }
+            Event::KeyUp(ref key_event)
+                if matches!(
+                    key_event.key.logical_key,
+                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space)
+                ) =>
+            {
+                self.swap_state()
+            }
+            _ => {}
         }
 
         EventPropagation::Continue
     }
 }
 
-impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
+impl<T: Clone> Dropdown<T> {
     /// Creates a default main view for the dropdown.
     ///
     /// This function generates a view that displays the given item as text,
@@ -307,21 +287,34 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
         T: std::fmt::Display,
     {
         const CHEVRON_DOWN: &str = r##"
-            <svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="-46.336 -46.336 278.016 278.016">
-                <path fill="#010002" d="M92.672 144.373a10.707 10.707 0 0 1-7.593-3.138L3.145 59.301c-4.194-4.199
-                -4.194-10.992 0-15.18a10.72 10.72 0 0 1 15.18 0l74.347 74.341 74.347-74.341a10.72 10.72 0 0 1
-                15.18 0c4.194 4.194 4.194 10.981 0 15.18l-81.939 81.934a10.694 10.694 0 0 1-7.588 3.138z"/>
-            </svg>
-        "##;
+<svg
+   width="12"
+   height="12"
+   viewBox="0 0 12 12"
+   version="1.1"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <g
+     style="display:inline;opacity:1;mix-blend-mode:normal"
+     transform="translate(-42.144408,-102.78125)">
+    <path
+       style="fill:none;stroke:#333333;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none"
+       d="m 43.978404,107.53126 4.194255,2.5 4.137753,-2.5" />
+  </g>
+</svg>"##;
 
         // TODO: this should be more customizable
-        (
-            Label::new(item),
-            svg(CHEVRON_DOWN).style(|s| s.items_center()),
-        )
-            .h_stack()
-            .style(|s| s.items_center().justify_between().size_full())
-            .into_any()
+        stack((
+            text(item),
+            container(svg(CHEVRON_DOWN).style(|s| s.size(12, 12).color(palette::css::BLACK)))
+                .style(|s| {
+                    s.items_center()
+                        .padding(3.)
+                        .border_radius(5)
+                        .hover(move |s| s.background(palette::css::LIGHT_GRAY))
+                }),
+        ))
+        .style(|s| s.items_center().justify_between().size_full())
+        .into_any()
     }
 
     /// Creates a new customizable dropdown.
@@ -365,31 +358,48 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
     ) -> Dropdown<T>
     where
         MF: Fn(T) -> AnyView + 'static,
-        I: IntoIterator<Item = T> + 'static,
-        LF: Fn(&T) -> AnyView + Clone + 'static,
-        T: PartialEq + Clone + 'static,
+        I: IntoIterator<Item = T> + Clone + 'static,
+        LF: Fn(T) -> AnyView + Clone + 'static,
+        T: Clone + 'static,
         AIF: Fn() -> T + 'static,
     {
         let dropdown_id = ViewId::new();
-        dropdown_id.register_listener(VisualChangedListener::listener_key());
-
-        // Process the iterator once, building a map from indices to items
-        let mut index_to_item = OrdMap::new();
-
-        for (idx, item) in iterator.into_iter().enumerate() {
-            index_to_item.insert(idx, item);
-        }
 
         let list_item_fn = Rc::new(list_item_fn);
 
-        let initial = UpdaterEffect::new(active_item, move |new_state| {
+        let list_view = Rc::new(move |list_item_fn: &dyn Fn(T) -> AnyView| {
+            let iterator = iterator.clone();
+            let iter_clone = iterator.clone();
+            let inner_list = list(iterator.into_iter().map(list_item_fn))
+                .on_accept(move |opt_idx| {
+                    if let Some(idx) = opt_idx {
+                        let val = iter_clone.clone().into_iter().nth(idx).unwrap();
+                        dropdown_id.update_state(Message::ActiveElement(Box::new(val.clone())));
+                        dropdown_id.update_state(Message::ListSelect(Box::new(val)));
+                    }
+                })
+                .style(|s| s.size_full())
+                .keyboard_navigable()
+                .on_event_stop(EventListener::FocusLost, move |_| {
+                    dropdown_id.update_state(Message::ListFocusLost);
+                })
+                .on_event_stop(EventListener::PointerMove, |_| {});
+            let inner_list_id = inner_list.id();
+            scroll(inner_list)
+                .on_event_stop(EventListener::FocusGained, move |_| {
+                    inner_list_id.request_focus();
+                })
+                .into_any()
+        });
+
+        let initial = create_updater(active_item, move |new_state| {
             dropdown_id.update_state(Message::ActiveElement(Box::new(new_state)));
         });
 
-        let main_fn = Box::new(Scope::current().enter_child(main_view));
+        let main_fn = Box::new(as_child_of_current_scope(main_view));
+
         let (child, main_view_scope) = main_fn(initial.clone());
         let main_view = child.id();
-        main_view.add_class(DropdownPreviewClass::class_ref());
 
         dropdown_id.set_children([child]);
 
@@ -399,12 +409,14 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
             main_view,
             main_view_scope,
             main_fn,
+            list_view,
             list_item_fn,
-            index_to_item,
+            list_style: Style::new(),
             overlay_id: None,
             window_origin: None,
+            on_accept: None,
+            on_open: None,
             style: Default::default(),
-            width: RwSignal::new(0.),
         }
         .class(DropdownClass)
     }
@@ -433,11 +445,11 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
     pub fn new<AIF, I>(active_item: AIF, iterator: I) -> Dropdown<T>
     where
         AIF: Fn() -> T + 'static,
-        I: IntoIterator<Item = T> + 'static,
-        T: Clone + PartialEq + std::fmt::Display + 'static,
+        I: IntoIterator<Item = T> + Clone + 'static,
+        T: Clone + std::fmt::Display + 'static,
     {
         Self::custom(active_item, Self::default_main_view, iterator, |v| {
-            crate::views::Label::new(v).into_any()
+            crate::views::text(v).into_any()
         })
     }
 
@@ -464,21 +476,21 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
     pub fn new_rw<AI, I>(active_item: AI, iterator: I) -> Dropdown<T>
     where
         AI: SignalGet<T> + SignalUpdate<T> + Copy + 'static,
-        I: IntoIterator<Item = T> + 'static,
-        T: Clone + PartialEq + std::fmt::Display + 'static,
+        I: IntoIterator<Item = T> + Clone + 'static,
+        T: Clone + std::fmt::Display + 'static,
     {
         Self::custom(
             move || active_item.get(),
             Self::default_main_view,
             iterator,
-            |t| Label::new(t).into_any(),
+            |t| text(t).into_any(),
         )
         .on_accept(move |nv| active_item.set(nv))
     }
 
     /// Overrides the main view for the dropdown.
     pub fn main_view(mut self, main_view: impl Fn(T) -> Box<dyn View> + 'static) -> Self {
-        self.main_fn = Box::new(Scope::current().enter_child(main_view));
+        self.main_fn = Box::new(as_child_of_current_scope(main_view));
         let (child, main_view_scope) = (self.main_fn)(self.current_value.clone());
         let main_view = child.id();
         self.main_view_scope = main_view_scope;
@@ -488,7 +500,7 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
     }
 
     /// Overrides the list view for each item in the dropdown list.
-    pub fn list_item_view(mut self, list_item_fn: impl Fn(&T) -> Box<dyn View> + 'static) -> Self {
+    pub fn list_item_view(mut self, list_item_fn: impl Fn(T) -> Box<dyn View> + 'static) -> Self {
         self.list_item_fn = Rc::new(list_item_fn);
         self
     }
@@ -499,172 +511,83 @@ impl<T: Clone + std::cmp::PartialEq + std::fmt::Debug> Dropdown<T> {
     /// The `show` function will be re-run whenever any signal it depends on changes.
     pub fn show_list(self, show: impl Fn() -> bool + 'static) -> Self {
         let id = self.id();
-        Effect::new(move |_| {
+        create_effect(move |_| {
             let state = show();
             id.update_state(Message::OpenState(state));
         });
         self
     }
 
-    /// Add a callback to be called when an item is selected from the dropdown.
+    /// Sets a callback function to be called when an item is selected from the dropdown.
     ///
-    /// This is the preferred way to handle dropdown selections, as it provides
-    /// direct typed access to the selected value without needing to correctly specify the generics on [DropdownAccept].
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// dropdown.on_accept(|value| {
-    ///     println!("Selected: {value}");
-    /// })
-    /// ```
-    pub fn on_accept(self, on_accept: impl Fn(T) + 'static) -> Self {
-        self.on_event_stop(
-            DropdownAccept::listener(),
-            move |_cx, t: &DropdownAccept<T>| on_accept(t.value.clone()),
-        )
+    /// Only one `on_accept` callback can be set at a time.
+    pub fn on_accept(mut self, on_accept: impl Fn(T) + 'static) -> Self {
+        self.on_accept = Some(Box::new(on_accept));
+        self
     }
 
-    /// Add a callback function to be called when the dropdown is opened.
-    #[deprecated(
-        note = "use .on_event_stop(DropdownOpenChanged::listener(), |_, _|) directly instead"
-    )]
-    pub fn on_open(self, on_open: impl Fn(bool) + 'static) -> Self {
-        self.on_event_stop(DropdownOpenChanged::listener(), move |_cx, t| on_open(*t))
+    /// Sets a callback function to be called when the dropdown is opened.
+    ///
+    /// Only one `on_open` callback can be set at a time.
+    pub fn on_open(mut self, on_open: impl Fn(bool) + 'static) -> Self {
+        self.on_open = Some(Box::new(on_open));
+        self
     }
 
-    fn swap_state(&mut self) {
+    fn swap_state(&self) {
         if self.overlay_id.is_some() {
-            self.close_dropdown();
+            self.id.update_state(Message::OpenState(false));
         } else {
-            self.open_dropdown();
+            self.id.request_layout();
+            self.id.update_state(Message::OpenState(true));
         }
     }
 
-    fn dispatch_open_changed(&self, is_open: bool) {
-        self.id.route_event(
-            Event::new_custom(DropdownOpenChanged { is_open }),
-            RouteKind::Directed {
-                target: self.id.get_element_id(),
-                phases: Phases::TARGET,
-            },
-        );
-    }
-
-    fn open_dropdown(&mut self) {
+    fn open_dropdown(&mut self, cx: &mut crate::context::UpdateCx) {
         if self.overlay_id.is_none() {
-            self.create_overlay();
-            self.dispatch_open_changed(true);
+            self.id.request_layout();
+            cx.app_state.compute_layout();
+            if let Some(layout) = self.id.get_layout() {
+                self.update_list_style(layout.size.width as f64);
+                let point =
+                    self.window_origin.unwrap_or_default() + (0., layout.size.height as f64);
+                self.create_overlay(point);
+
+                if let Some(on_open) = &self.on_open {
+                    on_open(true);
+                }
+            }
         }
     }
 
     fn close_dropdown(&mut self) {
         if let Some(id) = self.overlay_id.take() {
             remove_overlay(id);
-            self.dispatch_open_changed(false);
+            if let Some(on_open) = &self.on_open {
+                on_open(false);
+            }
         }
     }
 
-    fn build_list_view(&self) -> impl View + use<T> {
-        let dropdown_id = self.id;
-        let index_to_item = self.index_to_item.clone();
-        let list_item_fn = self.list_item_fn.clone();
-
-        let items_view = self.index_to_item.values().map(|v| (list_item_fn)(v));
-        let active = self
-            .index_to_item
-            .values()
-            .position(|v| *v == self.current_value);
-
-        let list = list(items_view)
-            .on_event_stop(
-                crate::views::list::ListAccept::listener(),
-                move |_, event| {
-                    if let Some(idx) = event.selection {
-                        let val = index_to_item
-                            .get(&idx)
-                            .expect("Index should exist in the map")
-                            .clone();
-                        dropdown_id.update_state(Message::ActiveElement(Box::new(val.clone())));
-                        dropdown_id.update_state(Message::ListSelect(Box::new(val)));
-                    }
-                },
-            )
-            .style(|s| s.width_full().keyboard_navigable())
-            .on_event_stop(listener::FocusLost, move |_, _| {
-                dropdown_id.update_state(Message::ListFocusLost);
-            })
-            .on_event_stop(listener::PointerDown, |cx, _e| {
-                // stop focus from chaging on pointer down
-                cx.prevent_default();
-            })
-            .debug_name("Dropdown List");
-
-        list.selection().set(active);
-        list
+    fn update_list_style(&mut self, width: f64) {
+        if let PxPctAuto::Pct(pct) = self.list_style.get(Width) {
+            let new_width = width * pct / 100.0;
+            self.list_style = self.list_style.clone().width(new_width);
+        }
     }
 
-    fn create_overlay(&mut self) {
-        let anchor_rect = self.id.get_visual_rect();
-        let width = self.width;
-        let point = Point::new(anchor_rect.x0, anchor_rect.y1);
-
-        let list = self.build_list_view();
-        let list_id = list.id();
-        exec_after_animation_frame(move |_| {
-            // we need to requet focus once the list has been styled and made visible or else it will not be considered focusable
+    fn create_overlay(&mut self, point: Point) {
+        let list = self.list_view.clone();
+        let list_style = self.list_style.clone();
+        let list_item_fn = self.list_item_fn.clone();
+        self.overlay_id = Some(add_overlay(point, move |_| {
+            let list = list(&*list_item_fn.clone())
+                .style(move |s| s.apply(list_style.clone()))
+                .into_view();
+            let list_id = list.id();
             list_id.request_focus();
-        });
-
-        let scroll = list.scroll().style(move |s| {
-            s.flex_col()
-                // constrains the scroll width to match
-                // the dropdown trigger. Without this, the scroll would expand to
-                // fill the full overlay due to width_full() on ScrollClass.
-                .width_full()
-                .max_height_full()
-        });
-
-        let anchor_id = self.id;
-        let inset = RwSignal::new(Size::new(point.x, point.y));
-
-        self.overlay_id = Some(add_overlay(
-            scroll
-                .on_event_stop(listener::WindowResized, move |cx, size| {
-                    let anchor = anchor_id.get_visual_rect();
-                    let container_size = size;
-                    let list_size = cx.target.owning_id().get_visual_rect_no_clip().size();
-                    let padding = 5.0;
-
-                    let ideal = Size::new(anchor.x0, anchor.y1);
-                    let clamped = Size::new(
-                        ideal.width.clamp(
-                            padding,
-                            (container_size.width - list_size.width - padding).max(padding),
-                        ),
-                        ideal.height.clamp(
-                            padding,
-                            (container_size.height - list_size.height - padding).max(padding),
-                        ),
-                    );
-
-                    if inset != clamped {
-                        inset.set(clamped);
-                    }
-                })
-                .container()
-                // Positioning container: uses absolute
-                // inset to position the width-constrained list. Also listens to
-                // VisualChanged to recompute position when the anchor or overlay moves.
-                .style(move |s| {
-                    let inset = inset.get();
-                    s.absolute()
-                        .inset_left(inset.width)
-                        .inset_top(inset.height)
-                        .min_width(width.get())
-                        .flex_shrink(0.)
-                }),
-        ));
-        self.overlay_id.unwrap().set_style_parent(self.id);
+            list
+        }));
     }
 
     /// Sets the custom style properties of the `Dropdown`.
@@ -693,7 +616,7 @@ impl CustomStyle for DropdownCustomStyle {
     type StyleClass = DropdownClass;
 }
 
-impl<T: Clone + PartialEq + std::fmt::Debug> CustomStylable<DropdownCustomStyle> for Dropdown<T> {
+impl<T: Clone> CustomStylable<DropdownCustomStyle> for Dropdown<T> {
     type DV = Self;
 }
 

@@ -5,20 +5,20 @@ use crate::{
     style_class,
     view::IntoView,
     views::{
-        self, Decorators, Stack, ValueContainer, create_value_container_signals, svg,
-        value_container,
+        self, create_value_container_signals, h_stack, svg, value_container, Decorators,
+        ValueContainer,
     },
 };
 use floem_reactive::{SignalGet, SignalUpdate};
 use std::fmt::Display;
 
 style_class!(
-    /// The style class that is applied to checkboxs.
+    /// The style class that is applied to the checkbox.
     pub CheckboxClass
 );
 
 style_class!(
-    /// The style class that is applied to all labeled checkbox stacks.
+    /// The style class that is applied to the labeled checkbox stack.
     pub LabeledCheckboxClass
 );
 
@@ -40,7 +40,10 @@ fn checkbox_svg(
             }
         }
     };
-    svg(check_svg).update_value(update_svg).class(CheckboxClass)
+    svg(check_svg)
+        .update_value(update_svg)
+        .class(CheckboxClass)
+        .keyboard_navigable()
 }
 
 /// # A customizable checkbox view for boolean selection.
@@ -77,7 +80,7 @@ impl Checkbox {
         let (inbound_signal, outbound_signal) = create_value_container_signals(checked);
 
         value_container(
-            checkbox_svg(inbound_signal.read_only(), custom_check).action(move || {
+            checkbox_svg(inbound_signal.read_only(), custom_check).on_click_stop(move |_| {
                 let checked = inbound_signal.get_untracked();
                 outbound_signal.set(!checked);
             }),
@@ -103,7 +106,7 @@ impl Checkbox {
         checked: impl SignalGet<bool> + SignalUpdate<bool> + Copy + 'static,
         custom_check: impl Into<String> + Clone + 'static,
     ) -> impl IntoView {
-        checkbox_svg(checked, custom_check).action(move || {
+        checkbox_svg(checked, custom_check).on_click_stop(move |_| {
             checked.update(|val| *val = !*val);
         })
     }
@@ -131,15 +134,15 @@ impl Checkbox {
         let (inbound_signal, outbound_signal) = create_value_container_signals(checked);
 
         value_container(
-            Stack::horizontal((
-                checkbox_svg(inbound_signal.read_only(), custom_check).action(move || {
+            h_stack((
+                checkbox_svg(inbound_signal.read_only(), custom_check).on_click_stop(move |_| {
                     let checked = inbound_signal.get_untracked();
                     outbound_signal.set(!checked);
                 }),
-                views::Label::derived(label),
+                views::label(label),
             ))
             .class(LabeledCheckboxClass)
-            .action(move || {
+            .on_click_stop(move |_| {
                 let checked = inbound_signal.get_untracked();
                 outbound_signal.set(!checked);
             })
@@ -168,13 +171,13 @@ impl Checkbox {
         label: impl Fn() -> S + 'static,
         custom_check: impl Into<String> + Clone + 'static,
     ) -> impl IntoView {
-        Stack::horizontal((
-            checkbox_svg(checked, custom_check).action(move || {
+        h_stack((
+            checkbox_svg(checked, custom_check).on_click_stop(move |_| {
                 checked.update(|val| *val = !*val);
             }),
-            views::Label::derived(label),
+            views::label(label),
         ))
-        .action(move || {
+        .on_click_stop(move |_| {
             checked.update(|val| *val = !*val);
         })
         .class(LabeledCheckboxClass)

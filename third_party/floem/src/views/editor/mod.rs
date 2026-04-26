@@ -2,7 +2,7 @@ use core::indent::IndentStyle;
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{hash_map::DefaultHasher, HashMap},
     hash::{Hash, Hasher},
     rc::Rc,
     sync::Arc,
@@ -10,14 +10,18 @@ use std::{
 };
 
 use crate::{
-    action::{TimerToken, exec_after, set_ime_allowed},
-    kurbo::{Point, Rect, Size, Vec2},
-    peniko::{Brush, Color, color::palette},
+    action::{exec_after, TimerToken},
+    keyboard::Modifiers,
+    kurbo::{Point, Rect, Vec2},
+    peniko::color::palette,
+    peniko::Color,
+    pointer::{PointerInputEvent, PointerMoveEvent},
     prop, prop_extractor,
-    reactive::{Effect, ReadSignal, RwSignal, Scope},
+    reactive::{batch, untrack, ReadSignal, RwSignal, Scope},
     style::{CursorColor, StylePropValue, TextColor},
-    text::{Attrs, AttrsList, LineHeightValue, OverflowWrap, TextLayout, TextWrapMode},
+    text::{Attrs, AttrsList, LineHeightValue, TextLayout, Wrap},
     view::{IntoView, View},
+    views::text,
 };
 use floem_editor_core::{
     buffer::rope_text::{RopeText, RopeTextVal},
@@ -27,12 +31,10 @@ use floem_editor_core::{
     movement::Movement,
     register::Register,
     selection::Selection,
-    soft_tab::{SnapDirection, snap_to_soft_tab_line_col},
-    word::WordCursor,
+    soft_tab::{snap_to_soft_tab_line_col, SnapDirection},
 };
 use floem_reactive::{SignalGet, SignalTrack, SignalUpdate, SignalWith, Trigger};
 use lapce_xi_rope::Rope;
-use parley::Affinity;
 
 pub mod actions;
 pub mod color;
@@ -50,7 +52,7 @@ pub mod view;
 pub mod visual_line;
 
 pub use floem_editor_core as core;
-use ui_events::{keyboard::Modifiers, pointer::PointerState};
+use peniko::Brush;
 
 use self::{
     command::Command,
@@ -60,17 +62,15 @@ use self::{
     text::{Document, Preedit, PreeditData, RenderWhitespace, Styling, WrapMethod},
     view::{LineInfo, ScreenLines, ScreenLinesBase},
     visual_line::{
-        ConfigId, FontSizeCacheId, LayoutEvent, LineFontSizeProvider, Lines, RVLine, ResolvedWrap,
-        TextLayoutProvider, VLine, VLineInfo,
+        hit_position_aff, ConfigId, FontSizeCacheId, LayoutEvent, LineFontSizeProvider, Lines,
+        RVLine, ResolvedWrap, TextLayoutProvider, VLine, VLineInfo,
     },
 };
-
-use super::Label;
 
 prop!(pub WrapProp: WrapMethod {} = WrapMethod::EditorWidth);
 impl StylePropValue for WrapMethod {
     fn debug_view(&self) -> Option<Box<dyn View>> {
-        Some(crate::views::Label::new(self).into_any())
+        Some(crate::views::text(self).into_any())
     }
 }
 prop!(pub CursorSurroundingLines: usize {} = 1);
@@ -85,19 +85,19 @@ prop!(pub PreeditUnderlineColor: Color {} = palette::css::WHITE);
 prop!(pub RenderWhitespaceProp: RenderWhitespace {} = RenderWhitespace::None);
 impl StylePropValue for RenderWhitespace {
     fn debug_view(&self) -> Option<Box<dyn View>> {
-        Some(crate::views::Label::new(self).into_any())
+        Some(crate::views::text(self).into_any())
     }
 }
 prop!(pub IndentStyleProp: IndentStyle {} = IndentStyle::Spaces(4));
 impl StylePropValue for IndentStyle {
     fn debug_view(&self) -> Option<Box<dyn View>> {
-        Some(Label::new(self).into_any())
+        Some(text(self).into_any())
     }
 }
 prop!(pub DropdownShadow: Option<Color> {} = None);
 prop!(pub Foreground: Color { inherited } = Color::from_rgb8(0x38, 0x3A, 0x42));
 prop!(pub Focus: Option<Color> {} = None);
-prop!(pub SelectionColor: Brush {} = Brush::Solid(palette::css::BLACK.with_alpha(0.5)));
+prop!(pub SelectionColor: Color {} = palette::css::BLACK.with_alpha(0.5));
 prop!(pub CurrentLineColor: Option<Color> {  } = None);
 prop!(pub Link: Option<Color> {} = None);
 prop!(pub VisibleWhitespaceColor: Color {} = palette::css::TRANSPARENT);
@@ -142,11 +142,9 @@ impl EditorStyle {
 
 pub(crate) const CHAR_WIDTH: f64 = 7.5;
 
-/// The main structure for the editor view itself.
-///
+/// The main structure for the editor view itself.  
 /// This can be considered to be the data part of the `View`.
-/// It holds an `Rc<dyn Document>` within as the document it is a view into.
-///
+/// It holds an `Rc<dyn Document>` within as the document it is a view into.  
 #[derive(Clone)]
 pub struct Editor {
     pub cx: Cell<Scope>,
@@ -168,10 +166,9 @@ pub struct Editor {
     pub viewport: RwSignal<Rect>,
     pub parent_size: RwSignal<Rect>,
 
-    pub(crate) editor_view_focused_value: RwSignal<bool>,
     pub editor_view_focused: Trigger,
     pub editor_view_focus_lost: Trigger,
-    pub editor_view_id: RwSignal<Option<crate::view::ViewId>>,
+    pub editor_view_id: RwSignal<Option<crate::id::ViewId>>,
 
     /// The current scroll position.
     pub scroll_delta: RwSignal<Vec2>,
@@ -188,12 +185,9 @@ pub struct Editor {
 
     pub last_movement: RwSignal<Movement>,
 
-    /// Whether ime input is allowed.
-    ///
+    /// Whether ime input is allowed.  
     /// Should not be set manually outside of the specific handling for ime.
     pub ime_allowed: RwSignal<bool>,
-    pub(crate) ime_cursor_area: RwSignal<Option<(Point, Size)>>,
-    owns_preedit: RwSignal<bool>,
 
     /// The Editor Style
     pub es: RwSignal<EditorStyle>,
@@ -201,8 +195,7 @@ pub struct Editor {
     pub floem_style_id: RwSignal<u64>,
 }
 impl Editor {
-    /// Create a new editor into the given document, using the styling.
-    ///
+    /// Create a new editor into the given document, using the styling.  
     /// `doc`: The backing [`Document`], such as [`TextDocument`](self::text_document::TextDocument)
     /// `style`: How the editor should be styled, such as [`SimpleStyling`](self::text::SimpleStyling)
     pub fn new(cx: Scope, doc: Rc<dyn Document>, style: Rc<dyn Styling>, modal: bool) -> Editor {
@@ -210,10 +203,8 @@ impl Editor {
         Editor::new_id(cx, id, doc, style, modal)
     }
 
-    /// Create a new editor into the given document, using the styling.
-    ///
-    /// `id` should typically be constructed by [`EditorId::next`]
-    ///
+    /// Create a new editor into the given document, using the styling.  
+    /// `id` should typically be constructed by [`EditorId::next`]  
     /// `doc`: The backing [`Document`], such as [`TextDocument`](self::text_document::TextDocument)
     /// `style`: How the editor should be styled, such as [`SimpleStyling`](self::text::SimpleStyling)
     pub fn new_id(
@@ -234,8 +225,8 @@ impl Editor {
     // TODO: should we really allow callers to arbitrarily specify the Id? That could open up
     // confusing behavior.
 
-    /// Create a new editor into the given document, using the styling.
-    /// `id` should typically be constructed by [`EditorId::next`]
+    /// Create a new editor into the given document, using the styling.  
+    /// `id` should typically be constructed by [`EditorId::next`]  
     /// `doc`: The backing [`Document`], such as [`TextDocument`](self::text_document::TextDocument)
     /// `style`: How the editor should be styled, such as [`SimpleStyling`](self::text::SimpleStyling)
     /// This does *not* create the view effects. Use this if you're creating an editor and then
@@ -256,12 +247,9 @@ impl Editor {
 
         let viewport = cx.create_rw_signal(Rect::ZERO);
         let cursor_mode = if modal {
-            CursorMode::Normal {
-                offset: 0,
-                affinity: CursorAffinity::Backward,
-            }
+            CursorMode::Normal(0)
         } else {
-            CursorMode::Insert(Selection::caret(0, CursorAffinity::Backward))
+            CursorMode::Insert(Selection::caret(0))
         };
         let cursor = Cursor::new(cursor_mode, None, None);
         let cursor = cx.create_rw_signal(cursor);
@@ -293,7 +281,6 @@ impl Editor {
             parent_size: cx.create_rw_signal(Rect::ZERO),
             scroll_delta: cx.create_rw_signal(Vec2::ZERO),
             scroll_to: cx.create_rw_signal(None),
-            editor_view_focused_value: cx.create_rw_signal(false),
             editor_view_focused: cx.create_trigger(),
             editor_view_focus_lost: cx.create_trigger(),
             editor_view_id: cx.create_rw_signal(None),
@@ -303,8 +290,6 @@ impl Editor {
             cursor_info: CursorInfo::new(cx),
             last_movement: cx.create_rw_signal(Movement::Left),
             ime_allowed: cx.create_rw_signal(false),
-            ime_cursor_area: cx.create_rw_signal(None),
-            owns_preedit: cx.create_rw_signal(false),
             es: editor_style,
             floem_style_id: cx.create_rw_signal(0),
         };
@@ -323,18 +308,6 @@ impl Editor {
         self.doc.get_untracked()
     }
 
-    /// Retrieves the [Document] and subscribes the current reactive scope to updates.
-    /// Returns `None` if the underlying reactive scope has been disposed.
-    pub fn try_doc(&self) -> Option<Rc<dyn Document>> {
-        self.doc.try_get()
-    }
-
-    /// Retrieves the [Document] without subscribing to reactive updates.
-    /// Returns `None` if the underlying reactive scope has been disposed.
-    pub fn try_doc_untracked(&self) -> Option<Rc<dyn Document>> {
-        self.doc.try_get_untracked()
-    }
-
     pub fn doc_track(&self) -> Rc<dyn Document> {
         self.doc.get()
     }
@@ -351,7 +324,7 @@ impl Editor {
     }
 
     pub fn recreate_view_effects(&self) {
-        Effect::batch(|| {
+        batch(|| {
             self.effects_cx.get().dispose();
             self.effects_cx.set(self.cx.get().create_child());
             create_view_effects(self.effects_cx.get(), self);
@@ -360,7 +333,7 @@ impl Editor {
 
     /// Swap the underlying document out
     pub fn update_doc(&self, doc: Rc<dyn Document>, styling: Option<Rc<dyn Styling>>) {
-        Effect::batch(|| {
+        batch(|| {
             // Get rid of all the effects
             self.effects_cx.get().dispose();
 
@@ -385,7 +358,7 @@ impl Editor {
     }
 
     pub fn update_styling(&self, styling: Rc<dyn Styling>) {
-        Effect::batch(|| {
+        batch(|| {
             // Get rid of all the effects
             self.effects_cx.get().dispose();
 
@@ -419,7 +392,7 @@ impl Editor {
             false,
         );
 
-        Effect::batch(|| {
+        batch(|| {
             editor.read_only.set(self.read_only.get_untracked());
             editor.es.set(self.es.get_untracked());
             editor
@@ -448,8 +421,7 @@ impl Editor {
         self.style.get_untracked()
     }
 
-    /// Get the text of the document
-    ///
+    /// Get the text of the document  
     /// You should typically prefer [`Self::rope_text`]
     pub fn text(&self) -> Rope {
         self.doc().text()
@@ -473,66 +445,26 @@ impl Editor {
     }
 
     pub fn set_preedit(&self, text: String, cursor: Option<(usize, usize)>, offset: usize) {
-        Effect::batch(|| {
-            self.doc().cache_rev().update(|cache_rev| {
-                *cache_rev += 1;
-            });
-
-            if self.preedit().preedit.with_untracked(|p| p.is_none()) {
-                self.owns_preedit.set(true);
-            }
-
-            // Updating preedit after cache_rev prevents crashes in IME effects.
-            // Test by pasting `で` and typing a byte before `で` through IME
+        batch(|| {
             self.preedit().preedit.set(Some(Preedit {
                 text,
                 cursor,
                 offset,
             }));
-        });
-    }
 
-    pub fn commit_preedit(&self) {
-        if !self.owns_preedit.get_untracked() {
-            return;
-        }
-
-        Effect::batch(|| {
-            self.owns_preedit.set(false);
-
-            let commited = self.preedit().preedit.with_untracked(|preedit| {
-                let Some(preedit) = preedit else {
-                    return false;
-                };
-
-                self.receive_char(&preedit.text);
-
-                true
+            self.doc().cache_rev().update(|cache_rev| {
+                *cache_rev += 1;
             });
-
-            if !commited {
-                return;
-            }
-
-            self.preedit().preedit.set(None);
-            self.ime_cursor_area.set(None);
-
-            if self.editor_view_focused_value.get_untracked() {
-                set_ime_allowed(false);
-                set_ime_allowed(true);
-            }
         });
     }
 
     pub fn clear_preedit(&self) {
-        self.owns_preedit.set(false);
-
         let preedit = self.preedit();
         if preedit.preedit.with_untracked(|preedit| preedit.is_none()) {
             return;
         }
 
-        Effect::batch(|| {
+        batch(|| {
             preedit.preedit.set(None);
             self.doc().cache_rev().update(|cache_rev| {
                 *cache_rev += 1;
@@ -552,71 +484,60 @@ impl Editor {
     }
 
     /// Default handler for `PointerDown` event
-    pub fn pointer_down_primary(&self, state: &PointerState) {
-        self.active.set(true);
-        self.left_click(state);
+    pub fn pointer_down(&self, pointer_event: &PointerInputEvent) {
+        if pointer_event.button.is_primary() {
+            self.active.set(true);
+            self.left_click(pointer_event);
+        } else if pointer_event.button.is_secondary() {
+            self.right_click(pointer_event);
+        }
     }
 
-    pub fn left_click(&self, state: &PointerState) {
-        match state.count {
+    pub fn left_click(&self, pointer_event: &PointerInputEvent) {
+        match pointer_event.count {
             1 => {
-                self.single_click(state);
+                self.single_click(pointer_event);
             }
             2 => {
-                self.double_click(state);
+                self.double_click(pointer_event);
             }
             3 => {
-                self.triple_click(state);
+                self.triple_click(pointer_event);
             }
             _ => {}
         }
     }
 
-    pub fn single_click(&self, pointer_event: &PointerState) {
-        self.commit_preedit();
-
+    pub fn single_click(&self, pointer_event: &PointerInputEvent) {
         let mode = self.cursor.with_untracked(|c| c.get_mode());
-        let (new_offset, _, mut affinity) =
-            self.offset_of_point(mode, pointer_event.logical_point());
-
-        if self.preedit().preedit.with_untracked(|p| p.is_some()) {
-            // change affinity to display caret after preedit
-            affinity = CursorAffinity::Forward;
-        }
-
+        let (new_offset, _) = self.offset_of_point(mode, pointer_event.pos);
         self.cursor.update(|cursor| {
             cursor.set_offset(
                 new_offset,
-                affinity,
                 pointer_event.modifiers.shift(),
                 pointer_event.modifiers.alt(),
-            );
+            )
         });
     }
 
-    pub fn double_click(&self, pointer_event: &PointerState) {
-        self.commit_preedit();
-
+    pub fn double_click(&self, pointer_event: &PointerInputEvent) {
         let mode = self.cursor.with_untracked(|c| c.get_mode());
-        let (mouse_offset, ..) = self.offset_of_point(mode, pointer_event.logical_point());
+        let (mouse_offset, _) = self.offset_of_point(mode, pointer_event.pos);
         let (start, end) = self.select_word(mouse_offset);
 
         self.cursor.update(|cursor| {
             cursor.add_region(
                 start,
                 end,
-                CursorAffinity::Backward,
                 pointer_event.modifiers.shift(),
                 pointer_event.modifiers.alt(),
-            );
+            )
         });
     }
 
-    pub fn triple_click(&self, pointer_event: &PointerState) {
-        self.commit_preedit();
-
+    pub fn triple_click(&self, pointer_event: &PointerInputEvent) {
         let mode = self.cursor.with_untracked(|c| c.get_mode());
-        let (mouse_offset, ..) = self.offset_of_point(mode, pointer_event.logical_point());
+        let (mouse_offset, _) = self.offset_of_point(mode, pointer_event.pos);
         let line = self.line_of_offset(mouse_offset);
         let start = self.offset_of_line(line);
         let end = self.offset_of_line(line + 1);
@@ -625,32 +546,28 @@ impl Editor {
             cursor.add_region(
                 start,
                 end,
-                CursorAffinity::Backward,
                 pointer_event.modifiers.shift(),
                 pointer_event.modifiers.alt(),
             )
         });
     }
 
-    pub fn pointer_move(&self, pointer_event: &PointerState) {
+    pub fn pointer_move(&self, pointer_event: &PointerMoveEvent) {
         let mode = self.cursor.with_untracked(|c| c.get_mode());
-        let (offset, _, affinity) = self.offset_of_point(mode, pointer_event.logical_point());
+        let (offset, _is_inside) = self.offset_of_point(mode, pointer_event.pos);
         if self.active.get_untracked() && self.cursor.with_untracked(|c| c.offset()) != offset {
-            self.commit_preedit();
-
-            self.cursor.update(|cursor| {
-                cursor.set_offset(offset, affinity, true, pointer_event.modifiers.alt())
-            });
+            self.cursor
+                .update(|cursor| cursor.set_offset(offset, true, pointer_event.modifiers.alt()));
         }
     }
 
-    pub fn pointer_up(&self, _pointer_event: &PointerState) {
+    pub fn pointer_up(&self, _pointer_event: &PointerInputEvent) {
         self.active.set(false);
     }
 
-    fn right_click(&self, pointer_event: &PointerState) {
+    fn right_click(&self, pointer_event: &PointerInputEvent) {
         let mode = self.cursor.with_untracked(|c| c.get_mode());
-        let (offset, ..) = self.offset_of_point(mode, pointer_event.logical_point());
+        let (offset, _) = self.offset_of_point(mode, pointer_event.pos);
         let doc = self.doc();
         let pointer_inside_selection = self
             .cursor
@@ -795,8 +712,8 @@ impl Editor {
             .iter_vlines_over(self.text_prov(), backwards, start, end)
     }
 
-    /// Iterator over *relative* [`VLineInfo`]s, starting at the buffer line, `start_line`.
-    /// The `visual_line`s provided by this will start at 0 from your `start_line`.
+    /// Iterator over *relative* [`VLineInfo`]s, starting at the buffer line, `start_line`.  
+    /// The `visual_line`s provided by this will start at 0 from your `start_line`.  
     /// This is preferable over `iter_lines` if you do not need to absolute visual line value.
     pub fn iter_rvlines(
         &self,
@@ -807,10 +724,8 @@ impl Editor {
     }
 
     /// Iterator over *relative* [`VLineInfo`]s, starting at the buffer line, `start_line` and
-    /// ending at `end_line`.
-    ///
-    /// `start_line..end_line`
-    ///
+    /// ending at `end_line`.  
+    /// `start_line..end_line`  
     /// This is preferable over `iter_lines` if you do not need to absolute visual line value.
     pub fn iter_rvlines_over(
         &self,
@@ -852,7 +767,7 @@ impl Editor {
 
     // ==== Line/Column Positioning ====
 
-    /// Convert an offset into the buffer into a line and idx.
+    /// Convert an offset into the buffer into a line and idx.  
     pub fn offset_to_line_col(&self, offset: usize) -> (usize, usize) {
         self.rope_text().offset_to_line_col(offset)
     }
@@ -884,8 +799,7 @@ impl Editor {
     }
 
     /// `affinity` decides whether an offset at a soft line break is considered to be on the
-    /// previous line or the next line.
-    ///
+    /// previous line or the next line.  
     /// If `affinity` is `CursorAffinity::Forward` and is at the very end of the wrapped line, then
     /// the offset is considered to be on the next line.
     pub fn vline_of_offset(&self, offset: usize, affinity: CursorAffinity) -> VLine {
@@ -910,8 +824,7 @@ impl Editor {
         self.lines.offset_of_vline(&self.text_prov(), vline)
     }
 
-    /// Get the visual line and column of the given offset.
-    ///
+    /// Get the visual line and column of the given offset.  
     /// The column is before phantom text is applied.
     pub fn vline_col_of_offset(&self, offset: usize, affinity: CursorAffinity) -> (VLine, usize) {
         self.lines
@@ -984,7 +897,7 @@ impl Editor {
     }
 
     /// Returns the point into the text layout of the line at the given line and col.
-    /// `x` being the leading edge of the character, and `y` being the baseline.
+    /// `x` being the leading edge of the character, and `y` being the baseline.  
     pub fn line_point_of_line_col(
         &self,
         line: usize,
@@ -1002,13 +915,12 @@ impl Editor {
                 .phantom_text
                 .col_after(col, affinity == CursorAffinity::Forward)
         };
-
-        let aff = match affinity {
-            CursorAffinity::Backward => Affinity::Upstream,
-            CursorAffinity::Forward => Affinity::Downstream,
-        };
-
-        text_layout.text.cursor_point(index, aff)
+        hit_position_aff(
+            &text_layout.text,
+            index,
+            affinity == CursorAffinity::Backward,
+        )
+        .point
     }
 
     /// Get the (point above, point below) of a particular offset within the editor.
@@ -1016,8 +928,12 @@ impl Editor {
         let line = self.line_of_offset(offset);
         let line_height = f64::from(self.style().line_height(self.id(), line));
 
-        let vline = self.rvline_info_of_offset(offset, affinity);
-        let Some(info) = self.screen_lines.with_untracked(|sl| sl.info(vline.rvline)) else {
+        let info = self.screen_lines.with_untracked(|sl| {
+            sl.iter_line_info().find(|info| {
+                info.vline_info.interval.start <= offset && offset <= info.vline_info.interval.end
+            })
+        });
+        let Some(info) = info else {
             // TODO: We could do a smarter method where we get the approximate y position
             // because, for example, this spot could be folded away, and so it would be better to
             // supply the *nearest* position on the screen.
@@ -1035,9 +951,9 @@ impl Editor {
     /// The boolean indicates whether the point is inside the text or not
     /// Points outside of vertical bounds will return the last line.
     /// Points outside of horizontal bounds will return the last column on the line.
-    pub fn offset_of_point(&self, mode: Mode, point: Point) -> (usize, bool, CursorAffinity) {
-        let ((line, col), is_inside, affinity) = self.line_col_of_point(mode, point);
-        (self.offset_of_line_col(line, col), is_inside, affinity)
+    pub fn offset_of_point(&self, mode: Mode, point: Point) -> (usize, bool) {
+        let ((line, col), is_inside) = self.line_col_of_point(mode, point);
+        (self.offset_of_line_col(line, col), is_inside)
     }
 
     /// Get the actual (line, col) of a particular point within the editor.
@@ -1071,23 +987,15 @@ impl Editor {
 
         let y = text_layout.get_layout_y(rvline.line_index).unwrap_or(0.0);
 
-        let index = text_layout
-            .text
-            .hit_test(Point::new(point.x, y as f64))
-            .map(|cursor| text_layout.text.cursor_to_byte_index(&cursor))
-            .unwrap_or(0);
-        (line, index)
+        let hit_point = text_layout.text.hit_point(Point::new(point.x, y as f64));
+        (line, hit_point.index)
     }
 
     /// Get the (line, col) of a particular point within the editor.
     /// The boolean indicates whether the point is within the text bounds.
     /// Points outside of vertical bounds will return the last line.
     /// Points outside of horizontal bounds will return the last column on the line.
-    pub fn line_col_of_point(
-        &self,
-        mode: Mode,
-        point: Point,
-    ) -> ((usize, usize), bool, CursorAffinity) {
+    pub fn line_col_of_point(&self, mode: Mode, point: Point) -> ((usize, usize), bool) {
         // TODO: this assumes that line height is constant!
         let line_height = f64::from(self.style().line_height(self.id(), 0));
         let info = if point.y <= 0.0 {
@@ -1118,34 +1026,21 @@ impl Editor {
 
         let y = text_layout.get_layout_y(rvline.line_index).unwrap_or(0.0);
 
-        let hit_point = Point::new(point.x, y as f64);
-        let size = text_layout.text.size();
-        let is_inside = hit_point.x <= size.width && hit_point.y <= size.height;
-        let (index, affinity) = text_layout
-            .text
-            .hit_test(hit_point)
-            .map(|cursor| {
-                (
-                    text_layout.text.cursor_to_byte_index(&cursor),
-                    cursor.affinity(),
-                )
-            })
-            .unwrap_or((0, Affinity::default()));
-        let mut affinity = match affinity {
-            Affinity::Upstream => CursorAffinity::Backward,
-            Affinity::Downstream => CursorAffinity::Forward,
-        };
+        let hit_point = text_layout.text.hit_point(Point::new(point.x, y as f64));
         // We have to unapply the phantom text shifting in order to get back to the column in
         // the actual buffer
-        let col = text_layout.phantom_text.before_col(index);
+        let col = text_layout.phantom_text.before_col(hit_point.index);
         // Ensure that the column doesn't end up out of bounds, so things like clicking on the far
         // right end will just go to the end of the line.
         let max_col = self.line_end_col(line, mode != Mode::Normal);
         let mut col = col.min(max_col);
 
+        // TODO: we need to handle affinity. Clicking at end of a wrapped line should give it a
+        // backwards affinity, while being at the start of the next line should be a forwards aff
+
         // TODO: this is a hack to get around text layouts not including spaces at the end of
         // wrapped lines, but we want to be able to click on them
-        if !is_inside {
+        if !hit_point.is_inside {
             // TODO(minor): this is probably wrong in some manners
             col = info.last_col(&self.text_prov(), true);
         }
@@ -1159,10 +1054,9 @@ impl Editor {
                 SnapDirection::Nearest,
                 tab_width,
             );
-            affinity = CursorAffinity::Forward;
         }
 
-        ((line, col), is_inside, affinity)
+        ((line, col), hit_point.is_inside)
     }
 
     // TODO: colposition probably has issues with wrapping?
@@ -1172,11 +1066,8 @@ impl Editor {
                 // TODO: won't this be incorrect with phantom text? Shouldn't this just use
                 // line_col_of_point and get the col from that?
                 let text_layout = self.text_layout(line);
-                let n = text_layout
-                    .text
-                    .hit_test(Point::new(x, 0.0))
-                    .map(|cursor| text_layout.text.cursor_to_byte_index(&cursor))
-                    .unwrap_or(0);
+                let hit_point = text_layout.text.hit_point(Point::new(x, 0.0));
+                let n = hit_point.index;
                 let col = text_layout.phantom_text.before_col(n);
 
                 col.min(self.line_end_col(line, caret))
@@ -1189,54 +1080,34 @@ impl Editor {
 
     /// Advance to the right in the manner of the given mode.
     /// Get the column from a horizontal at a specific line index (in a text layout)
-    pub fn rvline_horiz_col(&self, rvline: RVLine, horiz: &ColPosition, caret: bool) -> usize {
-        let RVLine { line, line_index } = rvline;
-
+    pub fn rvline_horiz_col(
+        &self,
+        RVLine { line, line_index }: RVLine,
+        horiz: &ColPosition,
+        caret: bool,
+    ) -> usize {
         match *horiz {
             ColPosition::Col(x) => {
                 let text_layout = self.text_layout(line);
-                let line_count = text_layout.text.visual_line_count();
                 let y_pos = text_layout
                     .text
-                    .visual_line_y(line_index)
-                    .or_else(|| {
-                        if line_count > 0 {
-                            text_layout.text.visual_line_y(line_count - 1)
-                        } else {
-                            None
-                        }
-                    })
+                    .layout_runs()
+                    .nth(line_index)
+                    .map(|run| run.line_y)
+                    .or_else(|| text_layout.text.layout_runs().last().map(|run| run.line_y))
                     .unwrap_or(0.0);
-                let n = text_layout
-                    .text
-                    .hit_test(Point::new(x, y_pos as f64))
-                    .map(|cursor| text_layout.text.cursor_to_byte_index(&cursor))
-                    .unwrap_or(0);
+                let hit_point = text_layout.text.hit_point(Point::new(x, y_pos as f64));
+                let n = hit_point.index;
                 let col = text_layout.phantom_text.before_col(n);
 
                 col.min(self.line_end_col(line, caret))
             }
-            ColPosition::End => {
-                let info = self.rvline_info(rvline);
-                self.last_col(info, caret)
-            }
-            ColPosition::Start => {
-                let info = self.rvline_info(rvline);
-                self.first_col(info)
-            }
-            ColPosition::FirstNonBlank => {
-                let info = self.rvline_info(rvline);
-                let rope_text = self.text_prov().rope_text();
-                let next_offset =
-                    WordCursor::new(rope_text.text(), info.interval.start).next_non_blank_char();
-
-                next_offset - info.interval.start + self.first_col(info)
-            }
+            // Otherwise it is the same as the other function
+            _ => self.line_horiz_col(line, horiz, caret),
         }
     }
 
-    /// Advance to the right in the manner of the given mode.
-    ///
+    /// Advance to the right in the manner of the given mode.  
     /// This is not the same as the [`Movement::Right`] command.
     pub fn move_right(&self, offset: usize, mode: Mode, count: usize) -> usize {
         self.rope_text().move_right(offset, mode, count)
@@ -1311,15 +1182,15 @@ impl Editor {
                 '\t' => {
                     let col_left = phantom.col_after(col, true);
                     let col_right = phantom.col_after(col + 1, false);
-                    let x0 = text_layout.cursor_point(col_left, Affinity::Upstream).x;
-                    let x1 = text_layout.cursor_point(col_right, Affinity::Upstream).x;
+                    let x0 = text_layout.hit_position(col_left).point.x;
+                    let x1 = text_layout.hit_position(col_right).point.x;
                     whitespace_buffer.push(('\t', (x0, x1)));
                 }
                 ' ' => {
                     let col_left = phantom.col_after(col, true);
                     let col_right = phantom.col_after(col + 1, false);
-                    let x0 = text_layout.cursor_point(col_left, Affinity::Upstream).x;
-                    let x1 = text_layout.cursor_point(col_right, Affinity::Upstream).x;
+                    let x0 = text_layout.hit_position(col_left).point.x;
+                    let x1 = text_layout.hit_position(col_right).point.x;
                     whitespace_buffer.push((' ', (x0, x1)));
                 }
                 _ => {
@@ -1384,7 +1255,7 @@ impl TextLayoutProvider for Editor {
             .color(self.es.with(|s| s.ed_text_color()))
             .family(&family)
             .font_size(font_size as f32)
-            .line_height(LineHeightValue::Pt(style.line_height(edid, line)));
+            .line_height(LineHeightValue::Px(style.line_height(edid, line)));
         let mut attrs_list = AttrsList::new(attrs.clone());
 
         self.es.with_untracked(|es| {
@@ -1419,17 +1290,16 @@ impl TextLayoutProvider for Editor {
         text_layout.set_tab_width(style.tab_width(edid, line));
         text_layout.set_text(&line_content, attrs_list, None);
 
+        // dbg!(self.editor_style.with(|s| s.wrap_method()));
         match self.es.with(|s| s.wrap_method()) {
             WrapMethod::None => {}
             WrapMethod::EditorWidth => {
                 let width = self.viewport.get_untracked().width();
-                text_layout.set_text_wrap_mode(TextWrapMode::Wrap);
-                text_layout.set_overflow_wrap(OverflowWrap::BreakWord);
+                text_layout.set_wrap(Wrap::WordOrGlyph);
                 text_layout.set_size(width as f32, f32::MAX);
             }
             WrapMethod::WrapWidth { width } => {
-                text_layout.set_text_wrap_mode(TextWrapMode::Wrap);
-                text_layout.set_overflow_wrap(OverflowWrap::BreakWord);
+                text_layout.set_wrap(Wrap::WordOrGlyph);
                 text_layout.set_size(width, f32::MAX);
             }
             // TODO:
@@ -1459,7 +1329,7 @@ impl TextLayoutProvider for Editor {
         } else {
             let offset = text.first_non_blank_character_on_line(indent_line);
             let (_, col) = text.offset_to_line_col(offset);
-            text_layout.cursor_point(col, Affinity::Upstream).x
+            text_layout.hit_position(col).point.x
         };
 
         let mut layout_line = TextLayoutLine {
@@ -1561,7 +1431,7 @@ fn create_view_effects(cx: Scope, ed: &Editor) {
                 let should_update = sl.on_created_layout(ed, line);
 
                 if should_update {
-                    Effect::untrack(|| {
+                    untrack(|| {
                         update_screen_lines(ed);
                     });
 
@@ -1603,7 +1473,7 @@ fn create_view_effects(cx: Scope, ed: &Editor) {
 
         // TODO: should this be a with or with_untracked?
         if viewport != base.with_untracked(|base| base.active_viewport) {
-            Effect::batch(|| {
+            batch(|| {
                 base.update(|base| {
                     base.active_viewport = viewport;
                 });

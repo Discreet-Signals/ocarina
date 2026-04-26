@@ -1,9 +1,8 @@
-use ui_events::pointer::{PointerButton, PointerButtonEvent};
-
 use crate::{
     action::{drag_window, toggle_window_maximized},
-    event::listener,
-    view::{IntoView, View, ViewId},
+    event::{Event, EventListener},
+    id::ViewId,
+    view::{IntoView, View},
 };
 
 use super::Decorators;
@@ -15,20 +14,19 @@ pub struct DragWindowArea {
 
 /// A view that will move the window when the mouse is dragged.
 ///
-/// This can be used to allow dragging the window when the title bar is disabled.
+/// This can be useful when the window has the title bar turned off and you want to be able to still drag the window.
 pub fn drag_window_area<V: IntoView + 'static>(child: V) -> DragWindowArea {
     let id = ViewId::new();
     id.set_children([child]);
     DragWindowArea { id }
-        .on_event_stop(
-            listener::PointerDown,
-            |_cx, PointerButtonEvent { button, .. }| {
-                if button.is_some_and(|b| b == PointerButton::Primary) {
+        .on_event_stop(EventListener::PointerDown, |e| {
+            if let Event::PointerDown(input_event) = e {
+                if input_event.button.is_primary() {
                     drag_window();
                 }
-            },
-        )
-        .on_event_stop(listener::DoubleClick, |_, _| toggle_window_maximized())
+            }
+        })
+        .on_double_click_stop(|_| toggle_window_maximized())
 }
 impl View for DragWindowArea {
     fn id(&self) -> ViewId {

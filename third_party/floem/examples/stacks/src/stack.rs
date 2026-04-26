@@ -1,5 +1,5 @@
 use floem::{
-    views::{Decorators, Stack},
+    views::{stack, v_stack, Decorators},
     IntoView,
 };
 
@@ -13,13 +13,13 @@ pub fn stack_view() -> impl IntoView {
         "Item 2",
 
         // The stack view which takes a tuple as an argument
-        Stack::new((
+        stack((
             "Item 3",
             "Item 4",
         )).style(|s| s.flex_col().row_gap(5)),
 
         // The vertical stack view which has flex_col() built in
-        Stack::vertical((
+        v_stack((
             "Item 5",
             "Item 6",
         )).style(|s| s.row_gap(5)),

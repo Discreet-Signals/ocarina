@@ -179,102 +179,72 @@
 pub mod action;
 pub mod animate;
 mod app;
-mod box_tree;
+#[cfg(target_os = "macos")]
+mod app_delegate;
+mod app_handle;
+pub(crate) mod app_state;
+#[cfg(feature = "vello")]
+mod border_path_iter;
+mod clipboard;
 pub mod context;
+pub mod dropped_file;
+pub mod easing;
 pub mod event;
 pub mod ext_event;
+pub mod file;
+#[cfg(any(feature = "rfd-async-std", feature = "rfd-tokio"))]
+pub mod file_action;
+pub(crate) mod id;
 mod inspector;
-pub mod layout;
-mod message;
-pub mod paint;
-pub mod platform;
-pub mod text;
-/// Re-export easing module from animate for backward compatibility.
-pub use animate::easing;
-/// Re-export dropped_file module from event for backward compatibility.
-pub use event::dropped_file;
-/// Re-export responsive module from layout for backward compatibility.
-pub use layout::responsive;
-/// Re-export file module from platform for backward compatibility.
-pub use platform::file;
-/// Re-export menu module from platform for backward compatibility.
-pub use platform::menu;
-/// Re-export view_tuple module from view for backward compatibility.
-pub use view::tuple as view_tuple;
-pub mod headless;
+pub mod keyboard;
+pub mod menu;
+mod nav;
+pub mod pointer;
+mod profiler;
+mod renderer;
+pub mod responsive;
+mod screen_layout;
 pub mod style;
-pub mod view;
+pub(crate) mod theme;
+pub mod touchpad;
+pub mod unit;
+mod update;
+pub(crate) mod view;
+pub(crate) mod view_state;
+pub(crate) mod view_storage;
+pub mod view_tuple;
 pub mod views;
 pub mod window;
-pub mod receiver_signal {
-    //! Signals from Channels, Futures, and Streams.
-    mod channel_signal;
-    mod common;
-    mod future_signal;
-    mod resource;
-    mod stream_signal;
-    pub use channel_signal::*;
-    pub use common::*;
-    pub use future_signal::*;
-    pub use resource::*;
-    pub use stream_signal::*;
-}
+mod window_handle;
+mod window_id;
+mod window_tracking;
 
-pub use box_tree::{BoxTree, ElementId, ElementMeta, FocusNavMeta};
-pub(crate) use box_tree::{bump_focus_nav_meta_revision, focus_nav_meta_revision};
-
-pub use app::{AppConfig, AppEvent, Application, launch, quit_app, reopen};
+pub use app::{launch, quit_app, AppConfig, AppEvent, Application};
+pub use app_state::AppState;
+pub use clipboard::{Clipboard, ClipboardError};
 pub use floem_reactive as reactive;
+pub use floem_renderer::gpu_resources::GpuResources;
+pub use floem_renderer::text;
 pub use floem_renderer::Renderer;
 pub use floem_renderer::Svg as RendererSvg;
-pub use floem_renderer::gpu_resources::GpuResources;
-pub use imbl;
-pub use layout::ScreenLayout;
-#[cfg(not(target_arch = "wasm32"))]
-pub use muda;
+pub use id::ViewId;
 pub use peniko;
 pub use peniko::kurbo;
-#[cfg(not(target_arch = "wasm32"))]
-pub use platform::open_file;
-#[cfg(not(target_arch = "wasm32"))]
-pub use platform::save_as;
-pub use platform::{Clipboard, ClipboardError, FileDialogOptions, FileInfo, FileSpec};
-pub use platform::{Menu, SubMenu};
+pub use screen_layout::ScreenLayout;
 pub use taffy;
-pub use ui_events;
-pub use understory_focus;
-pub use view::ViewId;
-pub use view::{AnyView, HasViewId, IntoView, LazyView, ParentView, View};
-pub use view::{Stack, StackOffset};
-pub use window::{
-    Urgency, WindowIdExt, WindowState, close_window, new_window, request_close_window,
-};
-
-#[doc(hidden)]
-pub use app::take_close_window_event_count;
-
-/// Re-export unit and theme modules from style for backward compatibility.
-pub use style::{theme, unit};
+pub use view::{recursively_layout_view, AnyView, IntoView, View};
+pub use window::{close_window, new_window};
+pub use window_id::{Urgency, WindowIdExt};
 
 pub mod prelude {
-    pub use crate::Renderer;
-    pub use crate::event::listener as el;
-    pub use crate::event::listener;
-    pub use crate::event::listener::EventListenerTrait;
     pub use crate::unit::{DurationUnitExt, UnitExt};
-    pub use crate::view::IntoViewIter;
-    pub use crate::view::ViewTuple;
+    pub use crate::view_tuple::ViewTuple;
     pub use crate::views::*;
-    pub use crate::{HasViewId, IntoView, ParentView, View};
-    #[allow(deprecated)]
+    pub use crate::Renderer;
+    pub use crate::{IntoView, View};
     pub use floem_reactive::{
-        RwSignal, SignalGet, SignalTrack, SignalUpdate, SignalWith, create_rw_signal, create_signal,
+        create_rw_signal, create_signal, RwSignal, SignalGet, SignalTrack, SignalUpdate, SignalWith,
     };
-    pub use palette::css;
-    pub use peniko::Color;
     pub use peniko::color::palette;
-    pub use ui_events::{
-        keyboard::{Code, Key, KeyState, KeyboardEvent, Modifiers, NamedKey},
-        pointer::{PointerButtonEvent, PointerEvent},
-    };
+    pub use peniko::Color;
 }

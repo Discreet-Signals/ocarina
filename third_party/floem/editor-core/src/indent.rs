@@ -1,9 +1,8 @@
 use lapce_xi_rope::Rope;
 
 use crate::{
-    buffer::{Buffer, rope_text::RopeText},
+    buffer::{rope_text::RopeText, Buffer},
     chars::{char_is_line_ending, char_is_whitespace},
-    cursor::CursorAffinity,
     selection::Selection,
 };
 
@@ -67,7 +66,7 @@ pub fn create_edit<'s>(buffer: &Buffer, offset: usize, indent: &'s str) -> (Sele
         let (_, col) = buffer.offset_to_line_col(offset);
         indent.split_at(indent.len() - col % indent.len()).0
     };
-    (Selection::caret(offset, CursorAffinity::Backward), indent)
+    (Selection::caret(offset), indent)
 }
 
 pub fn create_outdent<'s>(
@@ -88,10 +87,7 @@ pub fn create_outdent<'s>(
         offset - r
     };
 
-    Some((
-        Selection::region(start, offset, CursorAffinity::Backward),
-        "",
-    ))
+    Some((Selection::region(start, offset), ""))
 }
 
 /// Attempts to detect the indentation style used in a document.

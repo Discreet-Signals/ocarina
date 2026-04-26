@@ -24,7 +24,7 @@ bevy_ecs.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 log.workspace = true
-wgpu = "27.0"
+wgpu.workspace = true
 
 [lints]
 workspace = true

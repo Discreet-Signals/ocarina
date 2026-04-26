@@ -1,7 +1,7 @@
 [package]
 name = "floem-editor-core"
 version.workspace = true
-edition.workspace = true
+edition = "2021"
 repository = "https://github.com/lapce/floem"
 license.workspace = true
 description = "The core of the floem text editor"
@@ -10,7 +10,6 @@ description = "The core of the floem text editor"
 serde = { workspace = true, optional = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
-ui-events.workspace = true
 
 lapce-xi-rope = { workspace = true }
 

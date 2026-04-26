@@ -1,43 +1,37 @@
 use crate::form::{form, form_item};
 use floem::{
-    action::inspect,
-    dropped_file::FileDragDropped,
-    prelude::{palette::css, *},
-    theme::HoverTargetClass,
-    ui_events::keyboard::{Key, NamedKey},
+    event::{Event, EventListener},
+    keyboard::{Key, NamedKey},
+    prelude::*,
 };
 
 pub fn dropped_file_view() -> impl IntoView {
     let filename = RwSignal::new("".to_string());
 
-    let dropped_view = "dropped file(s)"
-        .class(HoverTargetClass)
+    let dropped_view = dyn_view(move || "dropped file".to_string())
         .style(|s| {
             s.size(200.0, 50.0)
+                .background(palette::css::GRAY)
+                .border(5.)
+                .border_color(palette::css::BLACK)
                 .flex_col()
-                .flex_shrink(1.)
-                .hover(|s| s.color(css::PINK))
                 .items_center()
                 .justify_center()
         })
-        .on_event_stop(el::KeyUp, |_, KeyboardEvent { key, .. }| {
-            if *key == Key::Named(NamedKey::F11) {
-                inspect();
-            }
-        })
-        .on_event_stop(
-            el::FileDragDrop,
-            move |_cx, e @ FileDragDropped { paths, .. }| {
+        .on_key_up(
+            Key::Named(NamedKey::F11),
+            |m| m.is_empty(),
+            move |_| floem::action::inspect(),
+        )
+        .on_event_stop(EventListener::DroppedFile, move |e| {
+            if let Event::DroppedFile(e) = e {
                 println!("DroppedFile {e:?}");
-                filename.set(format!(
-                    "{:?}",
-                    paths.first().expect("at least one to start a drag")
-                ));
-            },
-        );
+                filename.set(format!("{:?}", e.path));
+            }
+        });
 
     form((
-        form_item("Files:", Label::derived(move || filename.get())),
+        form_item("File:", label(move || filename.get())),
         form_item("", dropped_view),
     ))
 }

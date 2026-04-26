@@ -73,7 +73,7 @@ pub use label::*;
 mod rich_text;
 pub use rich_text::*;
 
-pub(crate) mod dyn_stack;
+mod dyn_stack;
 pub use dyn_stack::*;
 
 mod svg;
@@ -100,9 +100,6 @@ pub use decorator::*;
 mod list;
 pub use list::*;
 
-mod navigation_stack;
-pub use navigation_stack::*;
-
 mod virtual_list;
 pub use virtual_list::*;
 
@@ -110,16 +107,13 @@ mod virtual_stack;
 pub use virtual_stack::*;
 
 pub mod scroll;
-pub use scroll::{Scroll, ScrollExt};
+pub use scroll::{scroll, Scroll, ScrollExt};
 
 mod tab;
 pub use tab::*;
 
 mod tooltip;
 pub use tooltip::*;
-
-mod overlay;
-pub use overlay::*;
 
 mod stack;
 pub use stack::*;
@@ -129,9 +123,6 @@ pub use text_input::*;
 
 mod empty;
 pub use empty::*;
-
-mod stem;
-pub use stem::Stem;
 
 mod canvas;
 pub use canvas::*;
@@ -153,7 +144,6 @@ pub mod editor;
 
 #[cfg(feature = "editor")]
 pub mod text_editor;
-
 #[cfg(feature = "editor")]
 pub use text_editor::*;
 
@@ -171,6 +161,3 @@ pub use checkbox::*;
 
 mod toggle_button;
 pub use toggle_button::*;
-
-#[cfg(feature = "localization")]
-pub mod localization;

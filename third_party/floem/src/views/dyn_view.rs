@@ -1,7 +1,7 @@
-use floem_reactive::{Scope, UpdaterEffect};
+use floem_reactive::{as_child_of_current_scope, create_updater, Scope};
 
 use crate::{
-    view::ViewId,
+    id::ViewId,
     view::{IntoView, View},
 };
 
@@ -18,9 +18,9 @@ where
     IV: IntoView,
 {
     let id = ViewId::new();
-    let view_fn = Box::new(Scope::current().enter_child(move |_| view_fn().into_any()));
+    let view_fn = Box::new(as_child_of_current_scope(move |_| view_fn().into_any()));
 
-    let (child, child_scope) = UpdaterEffect::new(
+    let (child, child_scope) = create_updater(
         move || view_fn(()),
         move |(new_view, new_scope)| {
             let current_children = id.children();
@@ -44,7 +44,7 @@ impl View for DynamicView {
             let (old_children, child_scope) = *val;
             self.child_scope = child_scope;
             for child in old_children {
-                cx.window_state.remove_view(child);
+                cx.app_state_mut().remove_view(child);
             }
             old_child_scope.dispose();
             self.id.request_all();

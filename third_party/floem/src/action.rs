@@ -8,129 +8,83 @@
 
 use std::sync::atomic::AtomicU64;
 
-use floem_reactive::{SignalWith, UpdaterEffect};
+use floem_reactive::SignalWith;
 use peniko::kurbo::{Point, Size, Vec2};
-use winit::window::WindowId;
-use winit::window::{ResizeDirection, Theme};
-
-use crate::IntoView;
-use crate::platform::{Duration, Instant};
-
-use crate::{
-    app::{AppUpdateEvent, add_app_update_event},
-    message::{UPDATE_MESSAGES, UpdateMessage},
-    platform::menu::Menu,
-    view::View,
-    view::ViewId,
-    views::Decorators,
-    window::handle::{get_current_view, set_current_view},
-    window::tracking::with_window,
-};
+use winit::window::ResizeDirection;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::platform::file_action::*;
+use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Duration, Instant};
 
-/// Add an update message
+use crate::{
+    app::{add_app_update_event, AppUpdateEvent},
+    id::ViewId,
+    menu::Menu,
+    update::{UpdateMessage, UPDATE_MESSAGES},
+    view::View,
+    window_handle::{get_current_view, set_current_view},
+};
+
+#[cfg(any(feature = "rfd-async-std", feature = "rfd-tokio"))]
+pub use crate::file_action::*;
+
 pub(crate) fn add_update_message(msg: UpdateMessage) {
     let current_view = get_current_view();
-    let _ = UPDATE_MESSAGES.try_with(|msgs| {
-        let mut msgs = msgs.borrow_mut();
+    UPDATE_MESSAGES.with_borrow_mut(|msgs| {
         msgs.entry(current_view).or_default().push(msg);
     });
 }
 
-/// Toggle whether the window is maximized or not.
+/// Toggle whether the window is maximized or not
 pub fn toggle_window_maximized() {
     add_update_message(UpdateMessage::ToggleWindowMaximized);
 }
 
-/// Set the maximized state of the window.
+/// Set the maximized state of the window
 pub fn set_window_maximized(maximized: bool) {
     add_update_message(UpdateMessage::SetWindowMaximized(maximized));
 }
 
-/// Minimize the window.
+/// Minimize the window
 pub fn minimize_window() {
     add_update_message(UpdateMessage::MinimizeWindow);
 }
 
-/// If and while the mouse is pressed, allow the window to be dragged.
+/// If and while the mouse is pressed, allow the window to be dragged
 pub fn drag_window() {
     add_update_message(UpdateMessage::DragWindow);
 }
 
-/// If and while the mouse is pressed, allow the window to be resized.
+/// If and while the mouse is pressed, allow the window to be resized
 pub fn drag_resize_window(direction: ResizeDirection) {
     add_update_message(UpdateMessage::DragResizeWindow(direction));
 }
 
-/// Move the window by a specified delta.
+/// Move the window by a specified delta
 pub fn set_window_delta(delta: Vec2) {
     add_update_message(UpdateMessage::SetWindowDelta(delta));
 }
 
-/// Set the window scale.
+/// Set the window scale
 ///
-/// This will scale all view elements in the renderer.
+/// This will scale all view elements in the renderer
 pub fn set_window_scale(window_scale: f64) {
     add_update_message(UpdateMessage::WindowScale(window_scale));
 }
 
-/// Send a message to the application to open the Inspector for this Window.
+/// Send a message to the application to open the Inspector for this Window
 pub fn inspect() {
     add_update_message(UpdateMessage::Inspect);
-}
-
-/// Set the **global** app theme in all windows.
-///
-/// Toggles both floem and window themes.
-pub fn set_global_theme(theme: Theme) {
-    add_app_update_event(AppUpdateEvent::ThemeChanged { theme });
-}
-
-/// Set the **window** theme.
-///
-/// Specify `None` to reset the theme to the system default.
-pub fn set_theme(theme: Option<Theme>) {
-    add_update_message(UpdateMessage::SetTheme(theme));
-}
-
-/// Toggle **global** app theme.
-pub fn toggle_global_theme() {
-    let theme = current_theme().unwrap_or(Theme::Dark);
-    let theme = match theme {
-        Theme::Light => Theme::Dark,
-        Theme::Dark => Theme::Light,
-    };
-    add_app_update_event(AppUpdateEvent::ThemeChanged { theme });
-}
-
-/// Toggle **window** theme.
-pub fn toggle_window_theme() {
-    let theme = current_theme().unwrap_or(Theme::Dark);
-    let theme = match theme {
-        Theme::Light => Theme::Dark,
-        Theme::Dark => Theme::Light,
-    };
-    // add_app_update_event(AppUpdateEvent::ThemeChanged { theme });
-    add_update_message(UpdateMessage::SetTheme(Some(theme)));
-}
-
-/// Get current window theme.
-pub fn current_theme() -> Option<Theme> {
-    let win_id = get_current_view().window_id()?;
-    with_window(&win_id, |w| w.theme())?
 }
 
 pub(crate) struct Timer {
     pub(crate) token: TimerToken,
     pub(crate) action: Box<dyn FnOnce(TimerToken)>,
     pub(crate) deadline: Instant,
-    pub(crate) is_animation: bool,
-    pub(crate) window_id: Option<WindowId>,
 }
 
-/// A token associated with a timer.
+/// A token associated with a timer
 // TODO: what is this for?
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
 pub struct TimerToken(u64);
@@ -155,18 +109,18 @@ impl TimerToken {
         self.0
     }
 
-    /// Cancel a timer.
+    /// Cancel a timer
     pub fn cancel(self) {
         add_app_update_event(AppUpdateEvent::CancelTimer { timer: self });
     }
 }
 
-/// Execute a callback after a specified duration.
+/// Execute a callback after a specified duration
 pub fn exec_after(duration: Duration, action: impl FnOnce(TimerToken) + 'static) -> TimerToken {
     let view = get_current_view();
     let action = move |token| {
         let current_view = get_current_view();
-        set_current_view(view.root());
+        set_current_view(view);
         action(token);
         set_current_view(current_view);
     };
@@ -178,54 +132,20 @@ pub fn exec_after(duration: Duration, action: impl FnOnce(TimerToken) + 'static)
             token,
             action: Box::new(action),
             deadline,
-            is_animation: false,
-            window_id: None,
         },
     });
     token
 }
 
-/// Execute a callback on the next animation frame, synchronized with the display's refresh rate.
+/// Debounce an action
 ///
-/// Returns a [`TimerToken`] that can be used to cancel the callback before it fires.
-/// Returns [`TimerToken::INVALID`] if called outside of a window context.
-pub fn exec_after_animation_frame(action: impl FnOnce(TimerToken) + 'static) -> TimerToken {
-    let view = get_current_view();
-    let Some(window_id) = view.window_id() else {
-        return TimerToken::INVALID;
-    };
-
-    let action = move |token| {
-        let current_view = get_current_view();
-        set_current_view(view.root());
-        action(token);
-        set_current_view(current_view);
-    };
-
-    let token = TimerToken::next();
-    add_app_update_event(AppUpdateEvent::RequestAnimationTimer {
-        timer: Timer {
-            token,
-            action: Box::new(action),
-            deadline: Instant::now(), // overridden by handler using monitor refresh rate
-            is_animation: true,
-            window_id: Some(window_id),
-        },
-        window_id,
-    });
-    token
-}
-
-/// Debounce an action.
-///
-/// This tracks a signal and checks if the inner value has changed by checking it's hash and will
-/// run the action only once an **uninterrupted** duration has passed.
+/// This tracks a signal and checks if the inner value has changed by checking it's hash and will run the action only once an **uninterrupted** duration has passed
 pub fn debounce_action<T, F>(signal: impl SignalWith<T> + 'static, duration: Duration, action: F)
 where
     T: std::hash::Hash + 'static,
     F: Fn() + Clone + 'static,
 {
-    UpdaterEffect::new_stateful(
+    crate::reactive::create_stateful_updater(
         move |prev_opt: Option<(u64, Option<TimerToken>)>| {
             use std::hash::Hasher;
             let mut hasher = std::hash::DefaultHasher::new();
@@ -254,7 +174,7 @@ where
     );
 }
 
-/// Show a system context menu at the specified position.
+/// Show a system context menu at the specified position
 ///
 /// Platform support:
 /// - Windows: Yes
@@ -264,49 +184,52 @@ pub fn show_context_menu(menu: Menu, pos: Option<Point>) {
     add_update_message(UpdateMessage::ShowContextMenu { menu, pos });
 }
 
-/// Set the system window menu.
+/// Set the system window menu
 ///
 /// Platform support:
-/// - Windows: Yes
-/// - macOS: Yes
+/// - Windows: No
+/// - macOS: Yes (not currently implemented)
 /// - Linux: No
-/// - wasm32: No
-#[cfg(not(target_arch = "wasm32"))]
 pub fn set_window_menu(menu: Menu) {
     add_update_message(UpdateMessage::WindowMenu { menu });
 }
 
-/// Set the title of the window.
+/// Set the title of the window
 pub fn set_window_title(title: String) {
     add_update_message(UpdateMessage::SetWindowTitle { title });
 }
 
-/// Clear the focus from this window
-pub fn clear_focus() {
-    add_update_message(UpdateMessage::ClearFocus);
-}
-
-/// Focus the window.
+/// Focus the window
 pub fn focus_window() {
     add_update_message(UpdateMessage::FocusWindow);
 }
 
-/// Set whether ime input is shown.
+/// Clear the app focus
+pub fn clear_app_focus() {
+    add_update_message(UpdateMessage::ClearAppFocus);
+}
+
+/// Set whether ime input is shown
 pub fn set_ime_allowed(allowed: bool) {
     add_update_message(UpdateMessage::SetImeAllowed { allowed });
 }
 
-/// Set the ime cursor area.
+/// Set the ime cursor area
 pub fn set_ime_cursor_area(position: Point, size: Size) {
     add_update_message(UpdateMessage::SetImeCursorArea { position, size });
 }
 
 /// Creates a new overlay on the current window.
-pub fn add_overlay<V: View + 'static>(view: V) -> ViewId {
-    let view = view.style(move |s| s.absolute()).into_any();
-    let id = view.id();
-
-    add_update_message(UpdateMessage::AddOverlay { view });
+pub fn add_overlay<V: View + 'static>(
+    position: Point,
+    view: impl FnOnce(ViewId) -> V + 'static,
+) -> ViewId {
+    let id = ViewId::new();
+    add_update_message(UpdateMessage::AddOverlay {
+        id,
+        position,
+        view: Box::new(move || Box::new(view(id))),
+    });
     id
 }
 

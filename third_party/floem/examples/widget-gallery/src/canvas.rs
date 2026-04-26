@@ -1,23 +1,14 @@
-use std::{cell::RefCell, rc::Rc, time::Instant};
-
 use floem::{
-    ViewId,
-    context::{EventCx, LayoutChanged, LayoutChangedListener, PaintCx},
-    easing::Spring,
-    event::{CustomEvent, Event, EventPropagation},
+    context::PaintCx,
+    event::{Event, EventPropagation},
     kurbo::{Affine, Circle, Point, Rect, Shape, Size, Stroke},
     peniko::{
+        color::{AlphaColor, ColorSpaceTag::LinearSrgb, Hsl},
         Gradient, Mix,
-        color::{
-            AlphaColor,
-            ColorSpaceTag::{self, LinearSrgb},
-            Hsl, Hwb, Srgb,
-        },
     },
     prelude::*,
-    reactive::{Effect, UpdaterEffect},
-    style::{DirectTransition, Transition},
-    ui_events::pointer::{PointerButtonEvent, PointerEvent},
+    reactive::create_updater,
+    ViewId,
 };
 use palette::css;
 
@@ -25,41 +16,22 @@ use crate::form::{form, form_item};
 
 pub fn canvas_view() -> impl IntoView {
     let rounded = RwSignal::new(true);
-    let color = RwSignal::new(css::AQUA);
-
-    let border_radius = Rc::new(RefCell::new(DirectTransition::new(
-        32.,
-        Some(Transition::new(500.millis(), Spring::snappy())),
-    )));
-
-    let border_radius_ = border_radius.clone();
-    Effect::new(move |_| {
-        let rounded = rounded.get();
-        border_radius_
-            .borrow_mut()
-            .transition_to(if rounded { 32. } else { 0. });
-    });
 
     form((
         form_item(
             "Simple Canvas:",
-            Stack::horizontal((
+            h_stack((
                 canvas(move |cx, size| {
-                    rounded.track();
-                    let now = Instant::now();
-                    if border_radius.borrow_mut().step(&now) {
-                        cx.window_state.schedule_paint(cx.target_id.owning_id());
-                    }
                     cx.fill(
                         &Rect::ZERO
                             .with_size(size)
-                            .to_rounded_rect(border_radius.borrow().get()),
-                        color.get(),
+                            .to_rounded_rect(if rounded.get() { 8. } else { 0. }),
+                        css::PURPLE,
                         0.,
                     );
                 })
-                .style(|s| s.size(300, 100)),
-                Button::new("toggle rounded corners")
+                .style(|s| s.size(100, 300)),
+                button("toggle")
                     .action(move || rounded.update(|s| *s = !*s))
                     .style(|s| s.height(30)),
             ))
@@ -67,13 +39,15 @@ pub fn canvas_view() -> impl IntoView {
         ),
         form_item(
             "Complex Canvas:",
-            color_picker(color).style(|s| s.size(500, 500)),
+            color_picker().style(|s| s.size(500, 500)),
         ),
     ))
 }
 
-fn color_picker(color: RwSignal<Color>) -> impl IntoView {
-    let hue_opocity = Stack::vertical((
+fn color_picker() -> impl IntoView {
+    let color = RwSignal::new(css::AQUA);
+
+    let hue_opocity = v_stack((
         HuePicker::new(move || color.get())
             .on_change(move |c| color.set(c))
             .style(|s| s.size_full().border(1).border_radius(8)),
@@ -84,7 +58,7 @@ fn color_picker(color: RwSignal<Color>) -> impl IntoView {
     .style(|s| s.gap(5).size_full())
     .debug_name("hue opacity");
 
-    let final_hue_op = Stack::horizontal((
+    let final_hue_op = h_stack((
         canvas(move |cx, size: Size| {
             let rect_path = Rect::ZERO.with_size(size).to_rounded_rect(8.);
 
@@ -101,7 +75,7 @@ fn color_picker(color: RwSignal<Color>) -> impl IntoView {
     .style(|s| s.gap(5).width_full().height_pct(20.))
     .debug_name("final and hue/opacity");
 
-    Stack::vertical((
+    v_stack((
         two_d_picker(color).style(|s| s.border(1).border_radius(8)),
         final_hue_op,
     ))
@@ -148,58 +122,50 @@ fn draw_transparency_checkerboard(cx: &mut PaintCx, size: Size, clip_path: &impl
 pub struct SatValuePicker {
     id: ViewId,
     size: Size,
-    current_color: AlphaColor<Hwb>,
+    current_color: AlphaColor<Hsl>,
     on_change: Option<Box<dyn Fn(Color)>>,
-    point: Point,
     track: bool,
 }
 impl SatValuePicker {
     pub fn new(color: impl Fn() -> Color + 'static) -> Self {
         let id = ViewId::new();
-        id.register_listener(LayoutChanged::listener_key());
-        let color = UpdaterEffect::new(color, move |c| id.update_state(c));
+        let color = create_updater(color, move |c| id.update_state(c));
         Self {
             id,
             size: Size::ZERO,
             current_color: color.convert(),
             on_change: None,
-            point: Point::ZERO,
             track: false,
         }
     }
 
-    fn position_to_hwb(&self, pos: Point) -> AlphaColor<Hwb> {
+    fn position_to_hsl(&self, pos: Point) -> AlphaColor<Hsl> {
         let hue = self.current_color.components[0];
 
-        let s = (pos.x / self.size.width).clamp(f64::EPSILON, 1.0 - f64::EPSILON);
+        let saturation =
+            (pos.x / self.size.width * 100.).clamp(0.0 + f64::EPSILON, 100.0 - f64::EPSILON);
 
-        let v = (1.0 - pos.y / self.size.height).clamp(f64::EPSILON, 1.0 - f64::EPSILON);
-
-        let whiteness = (1.0 - s) * v;
-        let blackness = 1.0 - v;
+        let value = ((1.0 - (pos.y / self.size.height)) * 100.)
+            .clamp(0.0 + f64::EPSILON, 100.0 - f64::EPSILON);
 
         let alpha = self.current_color.components[3];
 
-        AlphaColor::<Hwb>::new([
-            hue,
-            (whiteness * 100.0) as f32,
-            (blackness * 100.0) as f32,
-            alpha,
-        ])
+        AlphaColor::<Hsl>::new([hue, saturation as f32, value as f32, alpha])
     }
 
     pub fn on_change(mut self, on_change: impl Fn(Color) + 'static) -> Self {
         self.on_change = Some(Box::new(on_change));
         self
     }
-
-    fn post_layout(&mut self, new_layout: &LayoutChanged) {
-        self.size = new_layout.new_box.size();
-    }
 }
 impl View for SatValuePicker {
     fn id(&self) -> ViewId {
         self.id
+    }
+
+    fn compute_layout(&mut self, _cx: &mut floem::context::ComputeLayoutCx) -> Option<Rect> {
+        self.size = self.id.get_size().unwrap_or_default();
+        None
     }
 
     fn update(&mut self, _cx: &mut floem::context::UpdateCx, state: Box<dyn std::any::Any>) {
@@ -208,33 +174,28 @@ impl View for SatValuePicker {
         }
     }
 
-    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
-        if let Some(new_layout) = LayoutChangedListener::extract(&cx.event) {
-            self.post_layout(new_layout);
-        }
+    fn event_before_children(
+        &mut self,
+        _cx: &mut floem::context::EventCx,
+        event: &Event,
+    ) -> EventPropagation {
         if let Some(on_change) = &self.on_change {
-            match &cx.event {
-                Event::Pointer(PointerEvent::Down(PointerButtonEvent {
-                    state, pointer, ..
-                })) => {
-                    self.current_color = self.position_to_hwb(state.logical_point());
-                    self.point = state.logical_point();
+            match event {
+                Event::PointerDown(pe) => {
+                    self.current_color = self.position_to_hsl(pe.pos);
                     on_change(self.current_color.convert());
                     self.track = true;
-                    if let Some(pointer_id) = pointer.pointer_id {
-                        cx.request_pointer_capture(pointer_id);
-                    }
+                    self.id.request_active();
                 }
-                Event::Pointer(PointerEvent::Up(PointerButtonEvent { state, .. })) => {
-                    self.current_color = self.position_to_hwb(state.logical_point());
-                    self.point = state.logical_point();
+                Event::PointerUp(pe) => {
+                    self.current_color = self.position_to_hsl(pe.pos);
                     on_change(self.current_color.convert());
+                    self.id.clear_active();
                     self.track = false;
                 }
-                Event::Pointer(PointerEvent::Move(pu)) => {
+                Event::PointerMove(pe) => {
                     if self.track {
-                        self.current_color = self.position_to_hwb(pu.current.logical_point());
-                        self.point = pu.current.logical_point();
+                        self.current_color = self.position_to_hsl(pe.pos);
                         on_change(self.current_color.convert());
                     }
                 }
@@ -251,51 +212,33 @@ impl View for SatValuePicker {
         let rect_path = Rect::ZERO.with_size(size).to_rounded_rect(8.);
         let hue = self.current_color.components[0];
 
-        // base
-        cx.fill(&rect_path, css::WHITE, 0.);
+        let lightness_gradient = Gradient::new_linear(Point::ZERO, Point::new(0.0, size.height))
+            .with_stops([(0.0, css::WHITE), (1.0, css::BLACK)]);
+        cx.fill(&rect_path, &lightness_gradient, 0.);
 
-        // saturation gradient
-        let sat_gradient = Gradient::new_linear(Point::ZERO, Point::new(size.width, 0.0))
+        cx.push_layer(Mix::Color, 1.0, Affine::IDENTITY, &rect_path);
+
+        let saturation_gradient = Gradient::new_linear(Point::ZERO, Point::new(size.width, 0.0))
             .with_stops([
-                (0.0, css::WHITE),
-                (1.0, AlphaColor::<Hsl>::new([hue, 100., 50., 1.]).convert()),
-            ])
-            .with_interpolation_cs(ColorSpaceTag::LinearSrgb);
-
-        cx.fill(&rect_path, &sat_gradient, 0.);
-
-        // value gradient
-        cx.push_layer(Mix::Multiply, 1.0, Affine::IDENTITY, &rect_path);
-
-        let val_gradient = Gradient::new_linear(Point::ZERO, Point::new(0.0, size.height))
-            .with_stops([(0.0, Color::from_rgba8(0, 0, 0, 0)), (1.0, css::BLACK)])
-            .with_interpolation_cs(ColorSpaceTag::LinearSrgb);
-
-        cx.fill(&rect_path, &val_gradient, 0.);
+                (0.0, AlphaColor::<Hsl>::new([hue, 0., 50., 1.])),
+                (1.0, AlphaColor::<Hsl>::new([hue, 100., 50., 1.])),
+            ]);
+        cx.fill(&rect_path, &saturation_gradient, 0.);
 
         cx.pop_layer();
 
-        cx.clip(&rect_path);
-
         if size.width > 0.0 && size.height > 0.0 {
-            // Larger indicator
-            let outer_radius = 8.0;
-            let inner_radius = 5.5;
+            let saturation = self.current_color.components[1];
+            let value = self.current_color.components[2];
 
-            let outer = Circle::new(self.point, outer_radius);
-            let inner = Circle::new(self.point, inner_radius);
+            let x_pos = saturation as f64 / 100.0 * size.width;
+            let y_pos = (1.0 - value as f64 / 100.0) * size.height;
 
-            // fill center with the selected color
-            cx.fill(&inner, self.current_color.convert::<Srgb>(), 0.);
+            let indicator_radius = 6.0;
+            let indicator_circle = Circle::new(Point::new(x_pos, y_pos), indicator_radius);
 
-            // white outline for contrast
-            cx.stroke(&outer, css::WHITE, &Stroke::new(2.0));
-
-            // subtle black inner stroke so it works on light backgrounds
-            cx.stroke(&inner, css::BLACK, &Stroke::new(1.0));
+            cx.stroke(&indicator_circle, css::WHITE, &Stroke::new(2.0));
         }
-
-        cx.clear_clip();
     }
 }
 
@@ -310,8 +253,7 @@ pub struct HuePicker {
 impl HuePicker {
     pub fn new(color: impl Fn() -> Color + 'static) -> Self {
         let id = ViewId::new();
-        id.register_listener(LayoutChanged::listener_key());
-        let color = UpdaterEffect::new(color, move |c| id.update_state(c));
+        let color = create_updater(color, move |c| id.update_state(c));
         Self {
             id,
             size: Size::ZERO,
@@ -335,15 +277,16 @@ impl HuePicker {
         self.on_change = Some(Box::new(on_change));
         self
     }
-
-    fn post_layout(&mut self, new_layout: &LayoutChanged) {
-        self.size = new_layout.new_box.size();
-    }
 }
 
 impl View for HuePicker {
     fn id(&self) -> ViewId {
         self.id
+    }
+
+    fn compute_layout(&mut self, _cx: &mut floem::context::ComputeLayoutCx) -> Option<Rect> {
+        self.size = self.id.get_size().unwrap_or_default();
+        None
     }
 
     fn update(&mut self, _cx: &mut floem::context::UpdateCx, state: Box<dyn std::any::Any>) {
@@ -352,30 +295,28 @@ impl View for HuePicker {
         }
     }
 
-    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
-        if let Some(new_layout) = LayoutChangedListener::extract(&cx.event) {
-            self.post_layout(new_layout);
-        }
+    fn event_before_children(
+        &mut self,
+        _cx: &mut floem::context::EventCx,
+        event: &Event,
+    ) -> EventPropagation {
         if let Some(on_change) = &self.on_change {
-            match &cx.event {
-                Event::Pointer(PointerEvent::Down(PointerButtonEvent {
-                    state, pointer, ..
-                })) => {
-                    self.current_color = self.position_to_hsl(state.logical_point());
+            match event {
+                Event::PointerDown(pe) => {
+                    self.current_color = self.position_to_hsl(pe.pos);
                     on_change(self.current_color.convert());
                     self.track = true;
-                    if let Some(pointer_id) = pointer.pointer_id {
-                        cx.request_pointer_capture(pointer_id);
-                    }
+                    self.id.request_active();
                 }
-                Event::Pointer(PointerEvent::Up(PointerButtonEvent { state, .. })) => {
-                    self.current_color = self.position_to_hsl(state.logical_point());
+                Event::PointerUp(pe) => {
+                    self.current_color = self.position_to_hsl(pe.pos);
                     on_change(self.current_color.convert());
+                    self.id.clear_active();
                     self.track = false;
                 }
-                Event::Pointer(PointerEvent::Move(pu)) => {
+                Event::PointerMove(pe) => {
                     if self.track {
-                        self.current_color = self.position_to_hsl(pu.current.logical_point());
+                        self.current_color = self.position_to_hsl(pe.pos);
                         on_change(self.current_color.convert());
                     }
                 }
@@ -395,11 +336,18 @@ impl View for HuePicker {
             Point::new(size.width, size.height / 2.0),
         )
         .with_stops([
-            (0.0, AlphaColor::<Hsl>::new([0.0, 100.0, 50.0, 1.0])),
-            (1.0, AlphaColor::<Hsl>::new([360.0, 100.0, 50.0, 1.0])),
-        ])
-        .with_hue_direction(floem::peniko::color::HueDirection::Longer)
-        .with_interpolation_cs(ColorSpaceTag::Hsl);
+            (0.0, Color::from_rgba8(255, 0, 0, 255)),
+            (0.1, Color::from_rgba8(255, 154, 0, 255)),
+            (0.2, Color::from_rgba8(208, 222, 33, 255)),
+            (0.3, Color::from_rgba8(79, 220, 74, 255)),
+            (0.4, Color::from_rgba8(63, 218, 216, 255)),
+            (0.5, Color::from_rgba8(47, 201, 226, 255)),
+            (0.6, Color::from_rgba8(28, 127, 238, 255)),
+            (0.7, Color::from_rgba8(95, 21, 242, 255)),
+            (0.8, Color::from_rgba8(186, 12, 248, 255)),
+            (0.9, Color::from_rgba8(251, 7, 217, 255)),
+            (1.0, Color::from_rgba8(255, 0, 0, 255)),
+        ]);
 
         cx.fill(&rect_path, &hue_gradient, 0.);
         if size.width > 0.0 {
@@ -414,10 +362,8 @@ impl View for HuePicker {
                 size.height,
             );
 
-            cx.clip(&rect_path);
             cx.stroke(&indicator_rect, css::WHITE, &Stroke::new(2.0));
             cx.fill(&indicator_rect, css::BLACK, 0.);
-            cx.clear_clip();
         }
     }
 }
@@ -433,8 +379,7 @@ pub struct OpacityPicker {
 impl OpacityPicker {
     pub fn new(color: impl Fn() -> Color + 'static) -> Self {
         let id = ViewId::new();
-        id.register_listener(LayoutChanged::listener_key());
-        let color = UpdaterEffect::new(color, move |c| id.update_state(c));
+        let color = create_updater(color, move |c| id.update_state(c));
         Self {
             id,
             size: Size::ZERO,
@@ -454,15 +399,16 @@ impl OpacityPicker {
         self.on_change = Some(Box::new(on_change));
         self
     }
-
-    fn post_layout(&mut self, layout_changed: &LayoutChanged) {
-        self.size = layout_changed.new_box.size();
-    }
 }
 
 impl View for OpacityPicker {
     fn id(&self) -> ViewId {
         self.id
+    }
+
+    fn compute_layout(&mut self, _cx: &mut floem::context::ComputeLayoutCx) -> Option<Rect> {
+        self.size = self.id.get_size().unwrap_or_default();
+        None
     }
 
     fn update(&mut self, _cx: &mut floem::context::UpdateCx, state: Box<dyn std::any::Any>) {
@@ -471,30 +417,28 @@ impl View for OpacityPicker {
         }
     }
 
-    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
-        if let Some(new_layout) = LayoutChangedListener::extract(&cx.event) {
-            self.post_layout(new_layout);
-        }
+    fn event_before_children(
+        &mut self,
+        _cx: &mut floem::context::EventCx,
+        event: &Event,
+    ) -> EventPropagation {
         if let Some(on_change) = &self.on_change {
-            match &cx.event {
-                Event::Pointer(PointerEvent::Down(PointerButtonEvent {
-                    state, pointer, ..
-                })) => {
-                    self.current_color = self.position_to_alpha(state.logical_point());
+            match event {
+                Event::PointerDown(pe) => {
+                    self.current_color = self.position_to_alpha(pe.pos);
                     on_change(self.current_color);
                     self.track = true;
-                    if let Some(pointer_id) = pointer.pointer_id {
-                        cx.request_pointer_capture(pointer_id);
-                    }
+                    self.id.request_active();
                 }
-                Event::Pointer(PointerEvent::Up(PointerButtonEvent { state, .. })) => {
-                    self.current_color = self.position_to_alpha(state.logical_point());
+                Event::PointerUp(pe) => {
+                    self.current_color = self.position_to_alpha(pe.pos);
                     on_change(self.current_color);
+                    self.id.clear_active();
                     self.track = false;
                 }
-                Event::Pointer(PointerEvent::Move(pu)) => {
+                Event::PointerMove(pe) => {
                     if self.track {
-                        self.current_color = self.position_to_alpha(pu.current.logical_point());
+                        self.current_color = self.position_to_alpha(pe.pos);
                         on_change(self.current_color);
                     }
                 }
@@ -536,10 +480,8 @@ impl View for OpacityPicker {
                 size.height,
             );
 
-            cx.clip(&rect_path);
             cx.stroke(&indicator_rect, css::WHITE, &Stroke::new(2.0));
             cx.fill(&indicator_rect, css::BLACK, 0.);
-            cx.clear_clip();
         }
     }
 }

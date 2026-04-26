@@ -1,97 +1,30 @@
 use std::{
-    ops::{Deref, DerefMut},
+    cell::{RefCell, RefMut},
+    marker::PhantomData,
     rc::Rc,
-    sync::Arc,
 };
 
-use parking_lot::{Mutex, MutexGuard};
+use crate::{id::Id, signal::NotThreadSafe};
 
-use crate::{id::Id, signal::TrackedRefCell};
-
-pub struct SyncWriteRef<'a, T> {
-    id: Id,
-    _handle: Arc<Mutex<T>>,
-    pub(crate) guard: Option<MutexGuard<'a, T>>,
+#[derive(Clone)]
+pub struct WriteSignalValue<T> {
+    pub(crate) id: Id,
+    pub(crate) value: Rc<RefCell<T>>,
+    pub(crate) ts: PhantomData<NotThreadSafe>,
 }
 
-pub struct LocalWriteRef<'a, T> {
-    id: Id,
-    _handle: Rc<TrackedRefCell<T>>,
-    pub(crate) guard: Option<crate::signal::TrackedRefMut<'a, T>>,
-}
-
-pub enum WriteRef<'a, T> {
-    Sync(SyncWriteRef<'a, T>),
-    Local(LocalWriteRef<'a, T>),
-}
-
-impl<'a, T> SyncWriteRef<'a, T> {
-    pub(crate) fn new(id: Id, handle: Arc<Mutex<T>>) -> Self {
-        let guard = handle.lock();
-        let guard = unsafe { std::mem::transmute::<MutexGuard<'_, T>, MutexGuard<'a, T>>(guard) };
-        Self {
-            id,
-            _handle: handle,
-            guard: Some(guard),
-        }
-    }
-}
-
-impl<'a, T> Drop for SyncWriteRef<'a, T> {
+impl<T> Drop for WriteSignalValue<T> {
     fn drop(&mut self) {
-        if let Some(guard) = self.guard.take() {
-            drop(guard);
-        }
         if let Some(signal) = self.id.signal() {
             signal.run_effects();
         }
     }
 }
 
-impl<'a, T> LocalWriteRef<'a, T> {
-    pub(crate) fn new(id: Id, handle: Rc<TrackedRefCell<T>>) -> Self {
-        let guard = handle.borrow_mut();
-        let guard = unsafe {
-            std::mem::transmute::<
-                crate::signal::TrackedRefMut<'_, T>,
-                crate::signal::TrackedRefMut<'a, T>,
-            >(guard)
-        };
-        Self {
-            id,
-            _handle: handle,
-            guard: Some(guard),
-        }
-    }
-}
-
-impl<'a, T> Drop for LocalWriteRef<'a, T> {
-    fn drop(&mut self) {
-        if let Some(guard) = self.guard.take() {
-            drop(guard);
-        }
-        if let Some(signal) = self.id.signal() {
-            signal.run_effects();
-        }
-    }
-}
-
-impl<'a, T> Deref for WriteRef<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            WriteRef::Sync(v) => v.guard.as_ref().expect("guard present"),
-            WriteRef::Local(v) => v.guard.as_ref().expect("guard present"),
-        }
-    }
-}
-
-impl<'a, T> DerefMut for WriteRef<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            WriteRef::Sync(v) => &mut *v.guard.as_mut().expect("guard present"),
-            WriteRef::Local(v) => &mut *v.guard.as_mut().expect("guard present"),
-        }
+impl<T> WriteSignalValue<T> {
+    /// Mutably borrows the current value stored in the Signal
+    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+        self.value.borrow_mut()
     }
 }
 
@@ -104,7 +37,9 @@ pub trait SignalUpdate<T> {
     where
         T: 'static,
     {
-        let _ = self.try_update(|v| *v = new_value);
+        if let Some(signal) = self.id().signal() {
+            signal.update_value(|v| *v = new_value);
+        }
     }
 
     /// Update the stored value with the given function and triggers effect run
@@ -112,29 +47,56 @@ pub trait SignalUpdate<T> {
     where
         T: 'static,
     {
-        let _ = self.try_update(f);
+        if let Some(signal) = self.id().signal() {
+            signal.update_value(f);
+        }
     }
 
     /// Update the stored value with the given function, triggers effect run,
     /// and returns the value returned by the function
     fn try_update<O>(&self, f: impl FnOnce(&mut T) -> O) -> Option<O>
     where
-        T: 'static;
+        T: 'static,
+    {
+        self.id().signal().map(|signal| signal.update_value(f))
+    }
 }
 
 pub trait SignalWrite<T> {
     /// get the Signal Id
     fn id(&self) -> Id;
-    /// Mutably borrows the signal value, triggering subscribers when dropped.
-    fn write(&self) -> WriteRef<'_, T>
+    /// Convert the Signal to `WriteSignalValue` where it holds a RefCell wrapped
+    /// original data of the signal, so that you can `borrow_mut()` to update the data.
+    ///
+    /// When `WriteSignalValue` drops, it triggers effect run
+    fn write(&self) -> WriteSignalValue<T>
     where
         T: 'static,
     {
         self.try_write().unwrap()
     }
 
-    /// If the Signal isn't disposed, mutably borrows the signal value.
-    fn try_write(&self) -> Option<WriteRef<'_, T>>
+    /// If the Signal isn't disposed,
+    /// convert the Signal to `WriteSignalValue` where it holds a RefCell wrapped
+    /// original data of the signal, so that you can `borrow_mut()` to update the data.
+    ///
+    /// When `WriteSignalValue` drops, it triggers effect run
+    fn try_write(&self) -> Option<WriteSignalValue<T>>
     where
-        T: 'static;
+        T: 'static,
+    {
+        if let Some(signal) = self.id().signal() {
+            Some(WriteSignalValue {
+                id: signal.id,
+                value: signal
+                    .value
+                    .clone()
+                    .downcast::<RefCell<T>>()
+                    .expect("to downcast signal type"),
+                ts: PhantomData,
+            })
+        } else {
+            None
+        }
+    }
 }

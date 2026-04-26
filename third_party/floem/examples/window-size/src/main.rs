@@ -1,11 +1,17 @@
-use floem::{context::LayoutChanged, kurbo::Size, prelude::*, window::WindowConfig, Application};
+use floem::{
+    event::{Event, EventListener},
+    keyboard::{Key, NamedKey},
+    kurbo::Size,
+    prelude::{create_signal, SignalGet, SignalUpdate},
+    views::{label, v_stack, Decorators},
+    window::WindowConfig,
+    Application, IntoView, View,
+};
 
 fn app_view() -> impl IntoView {
-    let size = RwSignal::new(Size::default());
+    let (size, set_size) = create_signal(Size::default());
 
-    Label::derived(move || format!("{}", size.get()))
-        .style(|s| s.font_size(30.0))
-        .container()
+    let view = v_stack((label(move || format!("{}", size.get())).style(|s| s.font_size(30.0)),))
         .style(|s| {
             s.flex_col()
                 .items_center()
@@ -13,16 +19,17 @@ fn app_view() -> impl IntoView {
                 .width_full()
                 .height_full()
                 .row_gap(10.0)
-        })
-        .on_event_stop(listener::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
-            if let Key::Named(NamedKey::F11) = key {
-                floem::action::inspect();
+        });
+
+    let id = view.id();
+    view.on_event_stop(EventListener::KeyUp, move |e| {
+        if let Event::KeyUp(e) = e {
+            if e.key.logical_key == Key::Named(NamedKey::F11) {
+                id.inspect();
             }
-        })
-        .on_event_stop(
-            LayoutChanged::listener(),
-            move |_cx, LayoutChanged { new_box, .. }| size.set(new_box.size()),
-        )
+        }
+    })
+    .on_resize(move |r| set_size.update(|value| *value = r.size()))
 }
 
 fn main() {

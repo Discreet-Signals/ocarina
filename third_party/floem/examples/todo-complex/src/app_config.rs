@@ -1,11 +1,13 @@
+use floem::action::set_window_scale;
+use floem::keyboard::Key;
+use floem::reactive::provide_context;
+use floem::views::Decorators;
 use floem::{
-    action::set_window_scale,
-    event::EventPropagation,
+    event::{Event, EventListener},
     kurbo::{Point, Size},
-    prelude::*,
-    reactive::{Context, UpdaterEffect},
+    reactive::{create_updater, RwSignal, SignalGet, SignalUpdate, SignalWith},
     window::WindowConfig,
-    Application,
+    Application, IntoView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,10 +59,10 @@ pub fn launch_with_track<V: IntoView + 'static>(app_view: impl FnOnce() -> V + '
     // modifying this will rewrite app config to disk
     let app_config = RwSignal::new(config);
 
-    Context::provide(app_config);
+    provide_context(app_config);
 
     // todo: debounce this
-    UpdaterEffect::new(
+    create_updater(
         move || app_config.get(),
         |config| {
             let _ = confy::store("my_app", "floem-defaults", config);
@@ -75,47 +77,49 @@ pub fn launch_with_track<V: IntoView + 'static>(app_view: impl FnOnce() -> V + '
         move |_| {
             set_window_scale(app_config.with(|c| c.window_scale));
             app_view()
-                .on_event(
-                    el::KeyDown,
-                    move |_, KeyboardEvent { key, modifiers, .. }| match key {
-                        Key::Character(ch)
-                            if (ch == "=" || ch == "+") && modifiers.contains(OS_MOD) =>
-                        {
-                            app_config.update(|ac| {
-                                ac.window_scale *= 1.1;
-                                floem::action::set_window_scale(ac.window_scale);
-                            });
-                            EventPropagation::Stop
-                        }
-
-                        Key::Character(ch) if ch == "-" && *modifiers == OS_MOD => {
-                            app_config.update(|ac| {
-                                ac.window_scale /= 1.1;
-                                floem::action::set_window_scale(ac.window_scale);
-                            });
-                            EventPropagation::Stop
-                        }
-
-                        Key::Character(ch) if ch == "0" && *modifiers == OS_MOD => {
-                            app_config.update(|ac| {
-                                ac.window_scale = 1.;
-                                floem::action::set_window_scale(ac.window_scale);
-                            });
-                            EventPropagation::Stop
-                        }
-
-                        _ => EventPropagation::Continue,
+                .on_key_down(
+                    Key::Character("=".into()),
+                    |m| m == OS_MOD,
+                    move |_| {
+                        app_config.update(|ac| {
+                            ac.window_scale *= 1.1;
+                            floem::action::set_window_scale(ac.window_scale);
+                        });
                     },
                 )
-                .on_event_stop(listener::WindowMoved, move |_cx, position| {
-                    app_config.update(|val| {
-                        val.position = *position;
-                    })
+                .on_key_down(
+                    Key::Character("-".into()),
+                    |m| m == OS_MOD,
+                    move |_| {
+                        app_config.update(|ac| {
+                            ac.window_scale /= 1.1;
+                            floem::action::set_window_scale(ac.window_scale);
+                        });
+                    },
+                )
+                .on_key_down(
+                    Key::Character("0".into()),
+                    |m| m == OS_MOD,
+                    move |_| {
+                        app_config.update(|ac| {
+                            ac.window_scale = 1.;
+                            floem::action::set_window_scale(ac.window_scale);
+                        });
+                    },
+                )
+                .on_event_stop(EventListener::WindowMoved, move |event| {
+                    if let Event::WindowMoved(position) = event {
+                        app_config.update(|val| {
+                            val.position = *position;
+                        })
+                    }
                 })
-                .on_event_stop(listener::WindowResized, move |_cx, size| {
-                    app_config.update(|val| {
-                        val.size = *size;
-                    })
+                .on_event_stop(EventListener::WindowResized, move |event| {
+                    if let Event::WindowResized(size) = event {
+                        app_config.update(|val| {
+                            val.size = *size;
+                        })
+                    }
                 })
         },
         Some(window_config),

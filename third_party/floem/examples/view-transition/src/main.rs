@@ -37,23 +37,24 @@ fn main() {
 fn app_view() -> impl IntoView {
     let state = RwSignal::new(ViewSwitcher::One);
 
-    Stack::vertical((
-        Button::new("Switch views").action(move || state.update(ViewSwitcher::toggle)),
-        Stack::horizontal((
+    v_stack((
+        button("Switch views").action(move || state.update(ViewSwitcher::toggle)),
+        h_stack((
             dyn_container(move || state.get(), move |which| which.view(state)),
-            ().animation(move |a| {
-                a.scale_effect()
-                    .with_duration(|a, d| a.delay(d))
-                    .keyframe(0, |s| s.style(|s| s.size(0, 0)))
-            })
-            .style(move |s| {
-                s.size(100, 100)
-                    .scale(100.pct())
-                    .border_radius(5)
-                    .background(palette::css::RED)
-                    .apply_if(state.get() == ViewSwitcher::Two, |s| s.hide())
-                    .apply(box_shadow())
-            }),
+            empty()
+                .animation(move |a| {
+                    a.scale_effect()
+                        .with_duration(|a, d| a.delay(d))
+                        .keyframe(0, |s| s.style(|s| s.size(0, 0)))
+                })
+                .style(move |s| {
+                    s.size(100, 100)
+                        .scale(100.pct())
+                        .border_radius(5)
+                        .background(palette::css::RED)
+                        .apply_if(state.get() == ViewSwitcher::Two, |s| s.hide())
+                        .apply(box_shadow())
+                }),
         ))
         .style(|s| s.items_center().justify_center().flex_wrap(FlexWrap::Wrap)),
     ))
@@ -67,9 +68,9 @@ fn app_view() -> impl IntoView {
 }
 
 fn view_two(view: RwSignal<ViewSwitcher>) -> impl IntoView {
-    Stack::vertical((
+    v_stack((
         "Another view",
-        Button::new("Switch back").action(move || view.set(ViewSwitcher::One)),
+        button("Switch back").action(move || view.set(ViewSwitcher::One)),
     ))
     .style(|s| {
         s.row_gap(10.0)

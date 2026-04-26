@@ -1,17 +1,17 @@
-use floem::{prelude::*, taffy::Position};
+use floem::{event::EventListener, prelude::*, taffy::Position};
 
 const SIDEBAR_WIDTH: f64 = 140.0;
 const TOPBAR_HEIGHT: f64 = 30.0;
 const SIDEBAR_ITEM_HEIGHT: f64 = 21.0;
 
 pub fn holy_grail_view() -> impl IntoView {
-    let top_bar =
-        Label::new("Top bar").style(|s| s.padding(10.0).width_full().height(TOPBAR_HEIGHT));
+    let top_bar = label(|| String::from("Top bar"))
+        .style(|s| s.padding(10.0).width_full().height(TOPBAR_HEIGHT));
 
     let side_bar_right = VirtualStack::with_view(
         || 0..100,
         |item| {
-            Label::derived(move || item.to_string()).style(move |s| {
+            label(move || item.to_string()).style(move |s| {
                 s.padding(10.0)
                     .padding_top(3.0)
                     .padding_bottom(3.0)
@@ -35,7 +35,7 @@ pub fn holy_grail_view() -> impl IntoView {
     let side_bar_left = VirtualStack::with_view(
         || 0..100,
         move |item| {
-            Label::derived(move || item.to_string()).style(move |s| {
+            label(move || item.to_string()).style(move |s| {
                 s.padding(10.0)
                     .padding_top(3.0)
                     .padding_bottom(3.0)
@@ -69,18 +69,24 @@ pub fn holy_grail_view() -> impl IntoView {
                 .min_width(150.0)
         });
 
-    let content = Stack::horizontal((side_bar_left, main_window, side_bar_right)).style(|s| {
-        s.position(Position::Absolute)
-            .inset_top(TOPBAR_HEIGHT)
-            .inset_bottom(0.0)
-            .width_full()
-    });
+    let content = (side_bar_left, main_window, side_bar_right)
+        .h_stack()
+        .style(|s| {
+            s.position(Position::Absolute)
+                .inset_top(TOPBAR_HEIGHT)
+                .inset_bottom(0.0)
+                .width_full()
+        });
 
-    Stack::vertical((top_bar, content))
+    (top_bar, content)
+        .v_stack()
         .style(|s| s.width_full().height_full())
-        .on_event_stop(listener::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
-            if *key == Key::Named(NamedKey::F11) {
-                floem::action::inspect();
+        .on_event_stop(EventListener::KeyUp, move |e| {
+            if let floem::event::Event::KeyUp(e) = e {
+                if e.key.logical_key == floem::keyboard::Key::Named(floem::keyboard::NamedKey::F11)
+                {
+                    floem::action::inspect();
+                }
             }
         })
 }

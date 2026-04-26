@@ -3,14 +3,15 @@ use std::{hash::Hasher, sync::atomic::AtomicU64, time::Instant};
 use floem::{
     action::{debounce_action, exec_after},
     easing::Spring,
-    event::{Event, EventPropagation},
+    event::{Event, EventListener},
+    keyboard::{Modifiers, NamedKey},
     kurbo::Stroke,
-    menu::Menu,
-    muda::{self, NativeIcon},
-    prelude::{el::DoubleClick, *},
-    reactive::{Effect, Memo, Trigger},
+    menu::{Menu, MenuEntry, MenuItem},
+    prelude::*,
+    reactive::{create_effect, create_memo, Trigger},
     style::{BoxShadowProp, CursorStyle, MinHeight, Transition},
     taffy::AlignItems,
+    views::Checkbox,
     AnyView,
 };
 
@@ -62,9 +63,8 @@ impl From<Todo> for TodoState {
 }
 impl IntoView for TodoState {
     type V = AnyView;
-    type Intermediate = AnyView;
 
-    fn into_intermediate(self) -> Self::Intermediate {
+    fn into_view(self) -> Self::V {
         // when the done status changes, commit the change to the db
         debounce_action(self.done, 300.millis(), move || {
             AppCommand::UpdateDone(self).execute()
@@ -76,42 +76,32 @@ impl IntoView for TodoState {
         });
 
         let (active, selected) = TODOS_STATE.with(|s| (s.active, s.selected));
-        let is_active = Memo::<bool>::new(move |_| active.with(|a| a.active == Some(self)));
-        let is_selected = Memo::<bool>::new(move |_| selected.with(|s| s.contains(&self)));
+        let is_active = create_memo(move |_| active.with(|a| (a.active == Some(self))));
+        let is_selected = create_memo(move |_| selected.with(|s| s.contains(&self)));
 
         let todo_action_menu = move || {
             // would be better to have actions that can operate on multiple selections.
             AppCommand::Escape.execute();
             AppCommand::InsertSelected(self).execute();
-
+            let delete = MenuItem::new("Delete").action(move || {
+                AppCommand::Delete(&[self]).execute();
+            });
             let done = self.done.get();
             let action_name = if done {
                 "Mark as Incomplete"
             } else {
                 "Mark as Complete"
             };
-
-            Menu::new()
-                .item(action_name, |i| {
-                    i.native_icon(if done {
-                        muda::NativeIcon::Remove
-                    } else {
-                        NativeIcon::Add
-                    })
-                    .action(move || {
-                        if done {
-                            self.done.set(false);
-                        } else {
-                            self.done.set(true);
-                        }
-                    })
-                })
-                .separator()
-                .item("Delete", |i| {
-                    i.native_icon(NativeIcon::TrashEmpty).action(move || {
-                        AppCommand::Delete(&[self]).execute();
-                    })
-                })
+            let toggle_done = MenuItem::new(action_name).action(move || {
+                if done {
+                    self.done.set(false);
+                } else {
+                    self.done.set(true);
+                }
+            });
+            Menu::new("todo action")
+                .entry(MenuEntry::Item(toggle_done))
+                .entry(MenuEntry::Item(delete))
         };
 
         let input_focused = Trigger::new();
@@ -127,15 +117,19 @@ impl IntoView for TodoState {
                     )
                     .class(SvgClass, |s| s.size_pct(50., 50.))
             })
-            // TODO: is this necessary anymore? I think it was here because of mistakes in the old event dispatch
-            .on_event_stop(el::KeyDown, |_, _| {});
+            .on_key_down(
+                floem::keyboard::Key::Named(NamedKey::Enter),
+                |_| true,
+                |_| {},
+            )
+            .on_event_stop(EventListener::PointerDown, move |_| {});
 
-        let input = TextInput::new(self.description)
+        let input = text_input(self.description)
             .placeholder("New To-Do")
             .into_view();
         let input_id = input.id();
         let input = input
-            .disable_default_event(move || (el::PointerDown, !is_active))
+            .disable_default_event(move || (EventListener::PointerDown, !is_active))
             .style(move |s| {
                 s.width_full()
                     .apply_if(!is_active.get(), |s| s.cursor(CursorStyle::Default))
@@ -154,22 +148,21 @@ impl IntoView for TodoState {
                     })
                     .class(PlaceholderTextClass, |s| s.color(palette::css::GRAY))
             })
-            .on_event(el::KeyDown, move |_, KeyboardEvent { key, .. }| {
-                if *key == Key::Named(NamedKey::Enter) {
+            .on_key_down(
+                floem::keyboard::Key::Named(NamedKey::Enter),
+                |m| m.is_empty(),
+                move |_| {
                     AppCommand::Escape.execute();
-                    EventPropagation::Stop
-                } else {
-                    EventPropagation::Continue
-                }
-            })
-            .on_event_stop(el::PointerDown, move |_, _| {
+                },
+            )
+            .on_event_stop(EventListener::PointerDown, move |_| {
                 AppCommand::SetSelected(self).execute();
             })
-            .on_event_stop(DoubleClick, move |_, _| {
+            .on_event_stop(EventListener::DoubleClick, move |_| {
                 AppCommand::SetActive(self).execute();
                 input_id.request_focus();
             })
-            .on_event_stop(el::FocusGained, move |_, _| {
+            .on_event_stop(EventListener::FocusGained, move |_| {
                 AppCommand::SetActive(self).execute();
                 input_focused.notify();
             });
@@ -178,38 +171,37 @@ impl IntoView for TodoState {
         if Instant::now().duration_since(TODOS_STATE.with(|s| s.time_stated)) > 50.millis() {
             input_id.request_focus();
         }
-        Effect::new(move |_| {
+        create_effect(move |_| {
             if is_active.get() {
                 input_id.request_focus();
             }
         });
 
-        let main_controls = Stack::horizontal((done_check, input))
+        let main_controls = (done_check, input)
+            .h_stack()
             .debug_name("Todo Checkbox and text input (main controls)")
             .style(|s| s.gap(10).width_full().items_center())
             .container()
-            .on_event_stop(listener::DoubleClick, move |_, _| {
+            .on_double_click_stop(move |_| {
                 AppCommand::SetActive(self).execute();
             })
-            .on_event_stop(listener::Click, move |cx, _| {
-                let Some(Event::Pointer(PointerEvent::Up(PointerButtonEvent { state, .. }))) =
-                    &cx.triggered_by
-                else {
+            .on_click_stop(move |e| {
+                let Event::PointerUp(e) = e else {
                     return;
                 };
-                if state.modifiers == OS_MOD {
+                if e.modifiers == OS_MOD {
                     AppCommand::ToggleSelected(self).execute();
-                } else if state.modifiers.contains(Modifiers::SHIFT) {
+                } else if e.modifiers.contains(Modifiers::SHIFT) {
                     AppCommand::SelectRange(self).execute();
                 } else {
                     AppCommand::SetSelected(self).execute();
                 }
             })
-            .style(|s| s.width_full().align_items(AlignItems::FlexStart));
+            .style(|s| s.width_full().align_items(Some(AlignItems::FlexStart)));
 
         let container = main_controls.container();
         let final_view_id = container.id();
-        Effect::new(move |_| {
+        create_effect(move |_| {
             input_focused.track();
             // this is a super ugly hack...
             // We should really figure out a way to make sure than an item that is focused
@@ -258,11 +250,10 @@ impl IntoView for TodoState {
 }
 impl IntoView for Todo {
     type V = <TodoState as IntoView>::V;
-    type Intermediate = <TodoState as IntoView>::Intermediate;
 
-    fn into_intermediate(self) -> Self::Intermediate {
+    fn into_view(self) -> Self::V {
         let todo_state: TodoState = self.into();
-        todo_state.into_intermediate()
+        todo_state.into_view()
     }
 }
 

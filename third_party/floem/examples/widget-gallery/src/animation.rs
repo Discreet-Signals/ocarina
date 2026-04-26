@@ -1,4 +1,12 @@
-use floem::{animate::Animation, prelude::*, reactive::Trigger};
+use floem::{
+    animate::Animation,
+    event::EventListener as EL,
+    peniko::color::palette,
+    reactive::{RwSignal, SignalGet, Trigger},
+    unit::DurationUnitExt,
+    views::{empty, h_stack, Decorators},
+    IntoView,
+};
 
 pub fn animation_view() -> impl IntoView {
     let animation = RwSignal::new(
@@ -20,27 +28,29 @@ pub fn animation_view() -> impl IntoView {
     let pause = Trigger::new();
     let resume = Trigger::new();
 
-    Stack::horizontal((
-        ().style(|s| s.background(palette::css::RED).size(500, 100))
-            .debug_name("Animating")
+    h_stack((
+        empty()
+            .style(|s| s.background(palette::css::RED).size(500, 100))
             .animation(move |_| animation.get().duration(10.seconds())),
-        ().style(|s| {
-            s.background(palette::css::BLUE)
-                .size(50, 100)
-                .border(5.)
-                .border_color(palette::css::GREEN)
-        })
-        .animation(move |_| animation.get())
-        .animation(move |a| {
-            a.keyframe(0, |f| f.computed_style())
-                .keyframe(100, |f| {
-                    f.style(|s| s.border(5.).border_color(palette::css::PURPLE))
-                })
-                .duration(5.seconds())
-                .repeat(true)
-                .auto_reverse(true)
-        }),
-        ().style(|s| s.background(palette::css::GREEN).size(100, 300))
+        empty()
+            .style(|s| {
+                s.background(palette::css::BLUE)
+                    .size(50, 100)
+                    .border(5.)
+                    .border_color(palette::css::GREEN)
+            })
+            .animation(move |_| animation.get())
+            .animation(move |a| {
+                a.keyframe(0, |f| f.computed_style())
+                    .keyframe(100, |f| {
+                        f.style(|s| s.border(5.).border_color(palette::css::PURPLE))
+                    })
+                    .duration(5.seconds())
+                    .repeat(true)
+                    .auto_reverse(true)
+            }),
+        empty()
+            .style(|s| s.background(palette::css::GREEN).size(100, 300))
             .animation(move |_| {
                 animation
                     .get()
@@ -48,10 +58,10 @@ pub fn animation_view() -> impl IntoView {
                     .resume(move || resume.track())
                     .delay(3.seconds())
             })
-            .on_event_stop(listener::PointerEnter, move |_, _| {
+            .on_event_stop(EL::PointerEnter, move |_| {
                 pause.notify();
             })
-            .on_event_stop(listener::PointerLeave, move |_, _| {
+            .on_event_stop(EL::PointerLeave, move |_| {
                 resume.notify();
             }),
     ))

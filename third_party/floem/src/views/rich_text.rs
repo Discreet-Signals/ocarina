@@ -1,90 +1,50 @@
-use std::{any::Any, cell::RefCell, rc::Rc};
+use std::any::Any;
 
-use floem_reactive::Effect;
-use floem_renderer::text::{Attrs, AttrsList, AttrsOwned};
-use peniko::{Color, color::palette};
-use smallvec::{SmallVec, smallvec};
+use floem_reactive::create_effect;
+use floem_renderer::{
+    text::{Attrs, AttrsList, AttrsOwned, TextLayout},
+    Renderer,
+};
+use peniko::{
+    color::palette,
+    kurbo::{Point, Rect},
+    Color,
+};
+use smallvec::{smallvec, SmallVec};
 use taffy::tree::NodeId;
 
-use crate::{IntoView, context::UpdateCx, view::LayoutNodeCx, view::View, view::ViewId};
-
-use crate::text::TextLayoutState;
+use crate::{
+    context::UpdateCx,
+    id::ViewId,
+    style::{Style, TextOverflow},
+    unit::PxPct,
+    view::View,
+    IntoView,
+};
 
 pub struct RichText {
     id: ViewId,
-    /// Layout data containing text layouts and overflow handling logic
-    layout_data: Rc<RefCell<TextLayoutState>>,
+    text_layout: TextLayout,
     text_node: Option<NodeId>,
-    layout_node: Option<NodeId>,
+    text_overflow: TextOverflow,
+    available_width: Option<f32>,
+    available_text_layout: Option<TextLayout>,
 }
 
-pub fn rich_text(
-    text: String,
-    attrs_list: AttrsList,
-    text_fn: impl Fn() -> (String, AttrsList) + 'static,
-) -> RichText {
+pub fn rich_text(text_layout: impl Fn() -> TextLayout + 'static) -> RichText {
     let id = ViewId::new();
-    Effect::new(move |_| {
-        let (new_text, new_attrs) = text_fn();
-        id.update_state((new_text, new_attrs));
+    let text = text_layout();
+    create_effect(move |_| {
+        let new_text_layout = text_layout();
+        id.update_state(new_text_layout);
     });
-
-    let layout_data = Rc::new(RefCell::new(TextLayoutState::new(Some(id))));
-
-    // Initialize the layout data with the text and attrs
-    {
-        let mut data = layout_data.borrow_mut();
-        data.set_text(&text, attrs_list, None);
-        data.set_text_overflow(crate::style::TextOverflow::Wrap {
-            overflow_wrap: crate::text::OverflowWrap::Normal,
-            word_break: crate::text::WordBreakStrength::Normal,
-        });
-    }
-
-    let mut rich_text = RichText {
+    RichText {
         id,
-        layout_data,
+        text_layout: text,
         text_node: None,
-        layout_node: None,
-    };
-
-    rich_text.set_taffy_layout();
-    rich_text
-}
-
-impl RichText {
-    fn mark_text_measure_dirty(&self) {
-        if let Some(text_node) = self.text_node {
-            let _ = self.id.taffy().borrow_mut().mark_dirty(text_node);
-        }
-        let _ = self.id.mark_view_layout_dirty();
-    }
-
-    fn set_taffy_layout(&mut self) {
-        let taffy_node = self.id.taffy_node();
-        let taffy = self.id.taffy();
-        let mut taffy = taffy.borrow_mut();
-        let text_node = taffy
-            .new_leaf(taffy::Style {
-                ..taffy::Style::DEFAULT
-            })
-            .unwrap();
-
-        let layout_fn = TextLayoutState::create_taffy_layout_fn(self.layout_data.clone());
-        let finalize_fn = TextLayoutState::create_finalize_fn(self.layout_data.clone());
-        self.text_node = Some(text_node);
-        self.layout_node = Some(taffy_node);
-
-        taffy
-            .set_node_context(
-                text_node,
-                Some(LayoutNodeCx::Custom {
-                    measure: layout_fn,
-                    finalize: Some(finalize_fn),
-                }),
-            )
-            .unwrap();
-        taffy.set_children(taffy_node, &[text_node]).unwrap();
+        text_overflow: TextOverflow::Wrap,
+        available_width: None,
+        available_text_layout: None,
     }
 }
 
@@ -94,55 +54,111 @@ impl View for RichText {
     }
 
     fn debug_name(&self) -> std::borrow::Cow<'static, str> {
-        self.layout_data
-            .borrow()
-            .get_text_layout()
-            .map(|_| {
-                let data = self.layout_data.borrow();
-                format!(
-                    "RichText: {:?}",
-                    crate::text::paragraph_ranges(data.text().unwrap_or_default())
-                        .map(|r| data.text().unwrap_or_default()[r].to_string())
-                        .collect::<Vec<_>>()
-                )
-            })
-            .unwrap_or_else(|| "RichText: <empty>".to_string())
-            .into()
+        format!(
+            "RichText: {:?}",
+            self.text_layout
+                .lines()
+                .iter()
+                .map(|text| text.text())
+                .collect::<String>()
+        )
+        .into()
     }
 
     fn update(&mut self, _cx: &mut UpdateCx, state: Box<dyn Any>) {
-        if let Ok(state) = state.downcast::<(String, AttrsList)>() {
-            let (text, attrs_list) = *state;
-
-            let mut data = self.layout_data.borrow_mut();
-            data.set_text(&text, attrs_list, None);
-            data.set_text_overflow(crate::style::TextOverflow::Wrap {
-                overflow_wrap: crate::text::OverflowWrap::Normal,
-                word_break: crate::text::WordBreakStrength::Normal,
-            });
-            drop(data);
-
-            self.mark_text_measure_dirty();
+        if let Ok(state) = state.downcast() {
+            self.text_layout = *state;
+            self.available_width = None;
+            self.available_text_layout = None;
             self.id.request_layout();
         }
     }
 
-    fn paint(&mut self, cx: &mut crate::context::PaintCx) {
-        let (Some(parent_node), Some(text_node)) = (self.layout_node, self.text_node) else {
-            return;
+    fn layout(&mut self, cx: &mut crate::context::LayoutCx) -> taffy::tree::NodeId {
+        cx.layout_node(self.id(), true, |_cx| {
+            let size = self.text_layout.size();
+            let width = size.width as f32;
+            let mut height = size.height as f32;
+
+            if let Some(t) = self.available_text_layout.as_ref() {
+                height = height.max(t.size().height as f32);
+            }
+
+            if self.text_node.is_none() {
+                self.text_node = Some(
+                    self.id
+                        .taffy()
+                        .borrow_mut()
+                        .new_leaf(taffy::style::Style::DEFAULT)
+                        .unwrap(),
+                );
+            }
+            let text_node = self.text_node.unwrap();
+
+            let style = Style::new().width(width).height(height).to_taffy_style();
+            let _ = self.id.taffy().borrow_mut().set_style(text_node, style);
+            vec![text_node]
+        })
+    }
+
+    fn compute_layout(&mut self, _cx: &mut crate::context::ComputeLayoutCx) -> Option<Rect> {
+        let layout = self.id.get_layout().unwrap_or_default();
+        let view_state = self.id.state();
+        let (padding_left, padding_right) = {
+            let view_state = view_state.borrow();
+            let style = view_state.combined_style.builtin();
+            let padding_left = match style.padding_left() {
+                PxPct::Px(padding) => padding as f32,
+                PxPct::Pct(pct) => pct as f32 * layout.size.width,
+            };
+            let padding_right = match style.padding_right() {
+                PxPct::Px(padding) => padding as f32,
+                PxPct::Pct(pct) => pct as f32 * layout.size.width,
+            };
+            self.text_overflow = style.text_overflow();
+            (padding_left, padding_right)
         };
 
-        let text_loc = self
-            .id
-            .get_content_rect_relative(text_node, parent_node)
-            .unwrap_or_default()
-            .origin();
+        let padding = padding_left + padding_right;
+        let width = self.text_layout.size().width as f32;
+        let available_width = layout.size.width - padding;
+        if self.text_overflow == TextOverflow::Wrap {
+            if width > available_width {
+                if self.available_width != Some(available_width) {
+                    let mut text_layout = self.text_layout.clone();
+                    text_layout.set_size(available_width, f32::MAX);
+                    self.available_text_layout = Some(text_layout);
+                    self.available_width = Some(available_width);
+                    self.id.request_layout();
+                }
+            } else {
+                if self.available_text_layout.is_some() {
+                    self.id.request_layout();
+                }
+                self.available_text_layout = None;
+                self.available_width = None;
+            }
+        }
 
-        self.layout_data
-            .borrow()
-            .with_effective_text_layout(|layout| {
-                layout.draw(cx, text_loc);
-            });
+        None
+    }
+
+    fn paint(&mut self, cx: &mut crate::context::PaintCx) {
+        let text_node = self.text_node.unwrap();
+        let location = self
+            .id
+            .taffy()
+            .borrow_mut()
+            .layout(text_node)
+            .cloned()
+            .unwrap_or_default()
+            .location;
+        let point = Point::new(location.x as f64, location.y as f64);
+        if let Some(text_layout) = self.available_text_layout.as_ref() {
+            cx.draw_text(text_layout, point);
+        } else {
+            cx.draw_text(&self.text_layout, point);
+        }
     }
 }
 
@@ -170,17 +186,17 @@ impl<'a> RichSpan<'a> {
         self
     }
 
-    pub fn font_width(mut self, stretch: floem_renderer::text::FontWidth) -> RichSpan<'a> {
-        self.attrs = self.attrs.font_width(stretch);
+    pub fn stretch(mut self, stretch: floem_renderer::text::Stretch) -> RichSpan<'a> {
+        self.attrs = self.attrs.stretch(stretch);
         self
     }
 
-    pub fn text_style(mut self, style: floem_renderer::text::FontStyle) -> RichSpan<'a> {
-        self.attrs = self.attrs.font_style(style);
+    pub fn text_style(mut self, style: floem_renderer::text::Style) -> RichSpan<'a> {
+        self.attrs = self.attrs.style(style);
         self
     }
 
-    pub fn weight(mut self, weight: floem_renderer::text::FontWeight) -> RichSpan<'a> {
+    pub fn weight(mut self, weight: floem_renderer::text::Weight) -> RichSpan<'a> {
         self.attrs = self.attrs.weight(weight);
         self
     }
@@ -210,33 +226,23 @@ pub struct RichSpanOwned {
 }
 impl IntoView for RichSpanOwned {
     type V = RichText;
-    type Intermediate = RichText;
 
-    fn into_intermediate(self) -> Self::Intermediate {
+    fn into_view(self) -> Self::V {
+        let mut layout = TextLayout::new();
         let mut attrs_list = AttrsList::new(Attrs::new().color(palette::css::BLACK));
-        for span in self.spans.clone() {
+        for span in self.spans {
             attrs_list.add_span(span.0, span.1.as_attrs());
         }
 
-        let text = self.text.clone();
-        let text_clone = self.text.clone();
-        let spans = self.spans.clone();
-
-        rich_text(text, attrs_list, move || {
-            let mut attrs_list = AttrsList::new(Attrs::new().color(palette::css::BLACK));
-            for span in spans.clone() {
-                attrs_list.add_span(span.0, span.1.as_attrs());
-            }
-            (text_clone.clone(), attrs_list)
-        })
+        layout.set_text(&self.text, attrs_list, None);
+        rich_text(move || layout.clone())
     }
 }
-impl<'a> IntoView for RichSpan<'a> {
+impl IntoView for RichSpan<'_> {
     type V = RichText;
-    type Intermediate = RichText;
 
-    fn into_intermediate(self) -> Self::Intermediate {
-        self.to_owned().into_intermediate()
+    fn into_view(self) -> Self::V {
+        self.to_owned().into_view()
     }
 }
 impl<'a, S> std::ops::Add<S> for RichSpan<'a>
@@ -421,45 +427,45 @@ where
         let span: RichSpan = self.into();
         span.family(family)
     }
-    fn stretch(self, stretch: crate::text::FontWidth) -> RichSpan<'a> {
+    fn stretch(self, stretch: crate::text::Stretch) -> RichSpan<'a> {
         let span: RichSpan = self.into();
-        span.font_width(stretch)
+        span.stretch(stretch)
     }
-    fn text_style(self, style: crate::text::FontStyle) -> RichSpan<'a> {
+    fn text_style(self, style: crate::text::Style) -> RichSpan<'a> {
         let span: RichSpan = self.into();
         span.text_style(style)
     }
     fn italic(self) -> RichSpan<'a> {
-        self.text_style(crate::text::FontStyle::Italic)
+        self.text_style(crate::text::Style::Italic)
     }
     fn oblique(self) -> RichSpan<'a> {
-        self.text_style(crate::text::FontStyle::Oblique(None))
+        self.text_style(crate::text::Style::Oblique)
     }
 
-    fn weight(self, weight: crate::text::FontWeight) -> RichSpan<'a> {
+    fn weight(self, weight: crate::text::Weight) -> RichSpan<'a> {
         let span: RichSpan = self.into();
         span.weight(weight)
     }
     fn thin(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::THIN)
+        self.weight(crate::text::Weight::THIN)
     }
     fn extra_light(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::EXTRA_LIGHT)
+        self.weight(crate::text::Weight::EXTRA_LIGHT)
     }
     fn light(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::LIGHT)
+        self.weight(crate::text::Weight::LIGHT)
     }
     fn medium(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::MEDIUM)
+        self.weight(crate::text::Weight::MEDIUM)
     }
     fn semibold(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::SEMI_BOLD)
+        self.weight(crate::text::Weight::SEMIBOLD)
     }
     fn bold(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::BOLD)
+        self.weight(crate::text::Weight::BOLD)
     }
     fn extra_bold(self) -> RichSpan<'a> {
-        self.weight(crate::text::FontWeight::EXTRA_BOLD)
+        self.weight(crate::text::Weight::EXTRA_BOLD)
     }
 
     fn raw_weight(self, weight: u16) -> RichSpan<'a> {

@@ -30,7 +30,9 @@ rust-version = "1.95"
 # SPIR-V passthrough lets the wgpu backend accept pre-compiled SPIR-V
 # produced by DXC (HLSL → SPIR-V). Engine code can still author in WGSL
 # — SPIR-V is an additional input path, not the only one.
-wgpu        = { version = "27.0", features = ["spirv"] }
+# wgpu pinned to the version Floem rev 31fa8f44 uses. Bump in lockstep
+# with Floem when we rebase the subtree forward.
+wgpu        = { version = "24.0.5", features = ["spirv"] }
 winit       = "0.30"
 
 # --- ECS / gameplay ---

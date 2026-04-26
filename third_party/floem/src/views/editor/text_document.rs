@@ -6,7 +6,7 @@ use std::{
 };
 
 use floem_editor_core::{
-    buffer::{Buffer, InvalLines, rope_text::RopeText},
+    buffer::{rope_text::RopeText, Buffer, InvalLines},
     command::EditCommand,
     cursor::Cursor,
     editor::{Action, EditConf, EditType},
@@ -15,18 +15,21 @@ use floem_editor_core::{
     selection::Selection,
     word::WordCursor,
 };
-use floem_reactive::{Effect, RwSignal, Scope, SignalGet, SignalTrack, SignalUpdate, SignalWith};
+use floem_reactive::{
+    create_effect, RwSignal, Scope, SignalGet, SignalTrack, SignalUpdate, SignalWith,
+};
 use lapce_xi_rope::{Rope, RopeDelta};
-use smallvec::{SmallVec, smallvec};
-use ui_events::keyboard::Modifiers;
+use smallvec::{smallvec, SmallVec};
+
+use crate::keyboard::Modifiers;
 
 use super::{
-    Editor, EditorStyle,
-    actions::{CommonAction, handle_command_default},
+    actions::{handle_command_default, CommonAction},
     command::{Command, CommandExecuted},
     id::EditorId,
     phantom_text::{PhantomText, PhantomTextKind, PhantomTextLine},
     text::{Document, DocumentPhantom, PreeditData, SystemClipboard},
+    Editor, EditorStyle,
 };
 
 type PreCommandFn = Box<dyn Fn(PreCommand) -> CommandExecuted>;
@@ -51,8 +54,7 @@ impl<'a> OnUpdate<'a> {
     }
 }
 
-/// A simple text document that holds content in a rope.
-///
+/// A simple text document that holds content in a rope.  
 /// This can be used as a base structure for common operations.
 #[derive(Clone)]
 pub struct TextDocument {
@@ -86,7 +88,7 @@ impl TextDocument {
         let placeholders = cx.create_rw_signal(HashMap::new());
 
         // Whenever the placeholders change, update the cache rev
-        Effect::new(move |_| {
+        create_effect(move |_| {
             placeholders.track();
             cache_rev.try_update(|cache_rev| {
                 *cache_rev += 1;
@@ -245,20 +247,19 @@ impl DocumentPhantom for TextDocument {
     fn phantom_text(&self, edid: EditorId, styling: &EditorStyle, line: usize) -> PhantomTextLine {
         let mut text = SmallVec::new();
 
-        if self.buffer.with_untracked(Buffer::is_empty)
-            && self.preedit.preedit.with_untracked(|p| p.is_none())
-            && let Some(placeholder) = self.placeholder(edid)
-        {
-            text.push(PhantomText {
-                kind: PhantomTextKind::Placeholder,
-                col: 0,
-                affinity: None,
-                text: placeholder,
-                font_size: None,
-                fg: Some(styling.placeholder_color()),
-                bg: None,
-                under_line: None,
-            });
+        if self.buffer.with_untracked(Buffer::is_empty) {
+            if let Some(placeholder) = self.placeholder(edid) {
+                text.push(PhantomText {
+                    kind: PhantomTextKind::Placeholder,
+                    col: 0,
+                    affinity: None,
+                    text: placeholder,
+                    font_size: None,
+                    fg: Some(styling.placeholder_color()),
+                    bg: None,
+                    under_line: None,
+                });
+            }
         }
 
         if let Some(preedit) = self.preedit_phantom(Some(styling.preedit_underline_color()), line) {

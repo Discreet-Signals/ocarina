@@ -34,17 +34,14 @@ use std::rc::Rc;
 
 use bevy_ecs::entity::Entity;
 use floem::{
-    IntoView,
-    event::listener,
+    View,
+    event::{Event, EventListener},
+    kurbo::{Point, Rect},
     reactive::{RwSignal, SignalGet},
     style::CursorStyle,
     views::{Decorators, canvas},
 };
-use floem::ui_events::{ScrollDelta, pointer::PointerButton};
-// Bring the `Renderer` trait into scope so the `submit_wgpu_pass`
-// method we call on `&mut PaintCx` (which derefs to the renderer
-// wrapper) is visible.
-use floem_renderer::{Renderer as _, WgpuPassCtx};
+use floem_renderer::WgpuPassCtx;
 use glam::Vec4;
 use ocarina_core::components::BasicMesh;
 use ocarina_scene::Scene;
@@ -91,76 +88,76 @@ pub fn make_signals() -> (SceneSignal, SelectionSignal) {
 pub fn viewport_panel(
     scene_signal: SceneSignal,
     selection_signal: SelectionSignal,
-) -> impl IntoView {
+) -> impl View {
     let state = Rc::new(RefCell::new(PanelState::new()));
 
     canvas({
         let state = state.clone();
-        move |cx, _size| {
-            // Compute the panel rect in framebuffer pixels. world_transform
-            // includes window scaling per Floem's Renderer trait docs.
-            let world_rect = cx.world_transform.transform_rect_bbox(cx.layout_rect_local);
-
+        move |cx, size| {
             // Snapshot reactive state BEFORE the closure (which runs
-            // later in finish()). The closure owns these values.
+            // later, in finish()). The closure owns these values.
             let scene = scene_signal.get_untracked();
             let selected_entity = selection_signal
                 .get_untracked()
                 .map(|s| s.entity);
 
+            let local_rect = Rect::ZERO.with_size(size);
             let state = state.clone();
             let pass: floem_renderer::WgpuPass = Box::new(move |ctx: WgpuPassCtx<'_>| {
                 let mut state = state.borrow_mut();
                 state.render_frame(&ctx, scene.as_ref(), selected_entity);
             });
-            cx.submit_wgpu_pass(world_rect, pass);
+            // PaintCx::submit_wgpu_pass converts the local logical rect
+            // to framebuffer pixels (world transform × scale) before
+            // forwarding to the renderer.
+            cx.submit_wgpu_pass(local_rect, pass);
         }
     })
     .style(|s| s.size_full().cursor(CursorStyle::Default))
-    .on_event_stop(listener::PointerDown, {
+    .on_event_stop(EventListener::PointerDown, {
         let state = state.clone();
-        move |_cx, pbe| {
+        move |e: &Event| {
+            let Event::PointerDown(pe) = e else { return };
             let mut s = state.borrow_mut();
-            s.last_pointer = Some(pbe.state.logical_point());
-            s.drag_mode = match pbe.button {
-                Some(PointerButton::Primary) => Some(DragMode::Orbit),
-                Some(PointerButton::Secondary) | Some(PointerButton::Auxiliary) => {
-                    Some(DragMode::Pan)
-                }
+            s.last_pointer = Some(pe.pos);
+            s.drag_mode = match pe.button.mouse_button() {
+                floem::pointer::MouseButton::Primary => Some(DragMode::Orbit),
+                floem::pointer::MouseButton::Secondary
+                | floem::pointer::MouseButton::Auxiliary => Some(DragMode::Pan),
                 _ => None,
             };
         }
     })
-    .on_event_stop(listener::PointerMove, {
+    .on_event_stop(EventListener::PointerMove, {
         let state = state.clone();
-        move |_cx, pu| {
-            let pos = pu.current.logical_point();
+        move |e: &Event| {
+            let Event::PointerMove(pm) = e else { return };
             let mut s = state.borrow_mut();
             if let (Some(prev), Some(mode)) = (s.last_pointer, s.drag_mode) {
-                let dx = (pos.x - prev.x) as f32;
-                let dy = (pos.y - prev.y) as f32;
+                let dx = (pm.pos.x - prev.x) as f32;
+                let dy = (pm.pos.y - prev.y) as f32;
                 match mode {
                     DragMode::Orbit => s.camera.orbit(dx, dy),
                     DragMode::Pan => s.camera.pan(dx, dy),
                 }
             }
-            s.last_pointer = Some(pos);
+            s.last_pointer = Some(pm.pos);
         }
     })
-    .on_event_stop(listener::PointerUp, {
+    .on_event_stop(EventListener::PointerUp, {
         let state = state.clone();
-        move |_cx, _pbe| {
+        move |_e: &Event| {
             state.borrow_mut().drag_mode = None;
         }
     })
-    .on_event_stop(listener::PointerWheel, {
+    .on_event_stop(EventListener::PointerWheel, {
         let state = state.clone();
-        move |_cx, pse| {
-            let dy = match pse.delta {
-                ScrollDelta::LineDelta(_, y) => y,
-                ScrollDelta::PixelDelta(p) => (p.y / 40.0) as f32,
-                ScrollDelta::PageDelta(_, y) => y * 10.0,
-            };
+        move |e: &Event| {
+            let Event::PointerWheel(pw) = e else { return };
+            // PointerWheelEvent.delta is a Vec2 (logical pixels for
+            // pixel-delta wheels, ~1 unit per detent for line-delta).
+            // Sum-then-clamp gives a stable feel across both modes.
+            let dy = pw.delta.y as f32;
             if dy.abs() > 1e-3 {
                 state.borrow_mut().camera.zoom(dy);
             }
@@ -180,7 +177,7 @@ struct PanelState {
     /// Current drag (if any) — primary = orbit, middle/secondary = pan.
     drag_mode: Option<DragMode>,
     /// Last pointer position (logical pixels) for delta computation.
-    last_pointer: Option<floem::kurbo::Point>,
+    last_pointer: Option<Point>,
 }
 
 #[derive(Clone, Copy)]

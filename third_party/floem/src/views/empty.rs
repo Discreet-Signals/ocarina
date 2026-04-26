@@ -1,57 +1,19 @@
-use crate::{view::View, view::ViewId};
+use crate::{id::ViewId, view::View};
 
-/// An empty View.
-///
-/// This view can still have a size, background, border radius, and outline.
-/// It can be used as a simple placeholder view when another view requires a child element but
-/// there is no meaningful child element to be provided.
+/// An empty View. See [`empty`].
 pub struct Empty {
     pub(crate) id: ViewId,
 }
 
-impl Empty {
-    /// Creates a new empty view.
-    ///
-    /// ## Example
-    /// ```rust
-    /// use floem::views::Empty;
-    ///
-    /// let placeholder = Empty::new();
-    /// ```
-    pub fn new() -> Self {
-        Empty { id: ViewId::new() }
-    }
-
-    /// Creates a new empty view with a pre-existing [`ViewId`].
-    ///
-    /// This is useful for lazy view construction where the `ViewId` is created
-    /// before the view itself.
-    pub fn with_id(id: ViewId) -> Self {
-        Empty { id }
-    }
-}
-
-impl Default for Empty {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// An empty View. This view can still have a size, background, border radius, and outline.
 ///
-/// This view can be used as a simple placeholder view when another view requires a child element but
-/// there is no meaningful child element to be provided.
-#[deprecated(since = "0.2.0", note = "Use Empty::new() instead")]
+/// This view can also be useful if you have another view that requires a child element but there is not a meaningful child element that needs to be provided.
 pub fn empty() -> Empty {
-    Empty::new()
+    Empty { id: ViewId::new() }
 }
 
 impl View for Empty {
     fn id(&self) -> ViewId {
         self.id
-    }
-
-    fn debug_name(&self) -> std::borrow::Cow<'static, str> {
-        "Empty".into()
     }
 }

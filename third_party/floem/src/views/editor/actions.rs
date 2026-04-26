@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use crate::keyboard::Modifiers;
 use floem_editor_core::{
     command::{EditCommand, MotionModeCommand, MultiSelectionCommand, ScrollCommand},
     cursor::Cursor,
@@ -8,12 +9,10 @@ use floem_editor_core::{
     register::Register,
 };
 use floem_reactive::{SignalGet, SignalUpdate, SignalWith};
-use ui_events::keyboard::Modifiers;
 
 use super::{
-    Editor,
     command::{Command, CommandExecuted},
-    movement,
+    movement, Editor,
 };
 
 pub fn handle_command_default(
@@ -58,8 +57,10 @@ fn handle_edit_command_default(
     // be more flexible.
     let had_edits = action.do_edit(ed, &mut cursor, cmd, modal, &mut register, smart_tab);
 
-    if had_edits && let Some(data) = yank_data {
-        register.add_delete(data);
+    if had_edits {
+        if let Some(data) = yank_data {
+            register.add_delete(data);
+        }
     }
 
     ed.cursor.set(cursor);
@@ -175,8 +176,7 @@ pub trait CommonAction {
     // TODO: should we have a more general cursor state structure?
     // since modal is about cursor, and register is sortof about cursor
     // but also there might be other state it wants. Should we just pass Editor to it?
-    /// Perform an edit.
-    ///
+    /// Perform an edit.  
     /// Returns `true` if there was any change.
     fn do_edit(
         &self,

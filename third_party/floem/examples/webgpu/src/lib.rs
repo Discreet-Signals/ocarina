@@ -1,10 +1,9 @@
-use floem::text::FONT_CONTEXT;
-use floem::views::Label;
+use floem::text::FONT_SYSTEM;
 use floem::window::WindowConfig;
 use floem::Application;
 use floem::{
-    reactive::{RwSignal, SignalGet, SignalUpdate},
-    views::{ButtonClass, Decorators},
+    reactive::{create_signal, SignalGet, SignalUpdate},
+    views::{label, ButtonClass, Decorators},
     IntoView,
 };
 
@@ -17,19 +16,19 @@ const DEJAVU_SERIF: &[u8] = include_bytes!("../fonts/DejaVuSerif.ttf");
 
 pub fn app_view() -> impl IntoView {
     // Create a reactive signal with a counter value, defaulting to 0
-    let counter = RwSignal::new(0);
+    let (counter, set_counter) = create_signal(0);
 
     // Create a vertical layout
     (
         // The counter value updates automatically, thanks to reactivity
-        Label::derived(move || format!("Value: {}", counter.get())),
+        label(move || format!("Value: {}", counter.get())),
         // Create a horizontal layout
         (
-            "Increment".class(ButtonClass).action(move || {
-                counter.update(|value| *value += 1);
+            "Increment".class(ButtonClass).on_click_stop(move |_| {
+                set_counter.update(|value| *value += 1);
             }),
-            "Decrement".class(ButtonClass).action(move || {
-                counter.update(|value| *value -= 1);
+            "Decrement".class(ButtonClass).on_click_stop(move |_| {
+                set_counter.update(|value| *value -= 1);
             }),
         ),
     )
@@ -42,16 +41,11 @@ pub fn run() {
     console_error_panic_hook::set_once();
 
     {
-        let mut font_cx = FONT_CONTEXT.lock();
-        font_cx
-            .collection
-            .register_fonts(FIRA_MONO.to_vec().into(), None);
-        font_cx
-            .collection
-            .register_fonts(FIRA_SANS.to_vec().into(), None);
-        font_cx
-            .collection
-            .register_fonts(DEJAVU_SERIF.to_vec().into(), None);
+        let mut font_system = FONT_SYSTEM.lock();
+        let font_db = font_system.db_mut();
+        font_db.load_font_data(Vec::from(FIRA_MONO));
+        font_db.load_font_data(Vec::from(FIRA_SANS));
+        font_db.load_font_data(Vec::from(DEJAVU_SERIF));
     }
 
     let window_config = WindowConfig::default().with_web_config(|w| w.canvas_id("the-canvas"));

@@ -11,10 +11,10 @@
 use std::{future::Future, sync::Arc};
 
 #[cfg(feature = "crossbeam")]
-use crossbeam::channel::{Receiver, bounded as sync_channel};
+use crossbeam::channel::{bounded as sync_channel, Receiver};
 #[cfg(not(feature = "crossbeam"))]
-use std::sync::mpsc::{Receiver, sync_channel};
-use wgpu::{Backends, InstanceFlags};
+use std::sync::mpsc::{sync_channel, Receiver};
+use wgpu::{Backends, Limits};
 
 use winit::window::{Window, WindowId};
 
@@ -48,12 +48,10 @@ impl GpuResources {
     pub fn request<F: Fn(WindowId) + 'static>(
         on_result: F,
         required_features: wgpu::Features,
-        backends: Option<Backends>,
         window: Arc<dyn Window>,
     ) -> Receiver<Result<(Self, wgpu::Surface<'static>), GpuResourceError>> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: Backends::from_env().or(backends).unwrap_or(Backends::all()),
-            flags: InstanceFlags::from_env_or_default(),
+            backends: Backends::from_env().unwrap_or(Backends::all()),
             ..Default::default()
         });
         // Channel passing to do async out-of-band within the winit event_loop since wasm can't
@@ -72,7 +70,7 @@ impl GpuResources {
                     }
                 };
 
-                let Ok(adapter) = instance
+                let Some(adapter) = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::default(),
                         compatible_surface: Some(&surface),
@@ -87,21 +85,47 @@ impl GpuResources {
                 };
 
                 tx.send(
-                    adapter
-                        .request_device(&wgpu::DeviceDescriptor {
-                            label: None,
-                            required_features,
-                            ..Default::default()
-                        })
+                    match adapter
+                        .request_device(
+                            &wgpu::DeviceDescriptor {
+                                label: None,
+                                required_features,
+                                required_limits: Limits::default(),
+                                ..Default::default()
+                            },
+                            None,
+                        )
                         .await
-                        .map_err(GpuResourceError::DeviceRequestError)
-                        .map(|(device, queue)| Self {
-                            adapter,
-                            device,
-                            queue,
-                            instance,
-                        })
-                        .map(|res| (res, surface)),
+                    {
+                        Ok((device, queue)) => {
+                            let gpu_res = Self {
+                                adapter,
+                                device,
+                                queue,
+                                instance,
+                            };
+                            Ok((gpu_res, surface))
+                        }
+                        Err(_e) => adapter
+                            .request_device(
+                                &wgpu::DeviceDescriptor {
+                                    label: None,
+                                    required_features,
+                                    required_limits: Limits::downlevel_defaults(),
+                                    ..Default::default()
+                                },
+                                None,
+                            )
+                            .await
+                            .map_err(GpuResourceError::DeviceRequestError)
+                            .map(|(device, queue)| Self {
+                                adapter,
+                                device,
+                                queue,
+                                instance,
+                            })
+                            .map(|res| (res, surface)),
+                    },
                 )
                 .unwrap();
                 on_result(window.id());

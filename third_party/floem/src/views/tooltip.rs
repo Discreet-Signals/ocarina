@@ -1,27 +1,25 @@
-#![deny(missing_docs)]
 use peniko::kurbo::Point;
 use std::cell::RefCell;
 use std::rc::Rc;
-use ui_events::pointer::PointerEvent;
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use web_time::Duration;
+
+use crate::style::{Style, StyleClass as _};
+use crate::views::Decorators;
 use crate::{
-    action::{TimerToken, add_overlay, exec_after, remove_overlay},
+    action::{add_overlay, exec_after, remove_overlay, TimerToken},
     context::{EventCx, UpdateCx},
-    event::{Event, EventPropagation, Phase},
-    platform::Duration,
+    event::{Event, EventPropagation},
+    id::ViewId,
     prop, prop_extractor, style_class,
-    view::{IntoView, View, ViewId},
-    views::Decorators,
+    view::{default_compute_layout, IntoView, View},
 };
 
-style_class!(
-    /// A class for the tooltip views.
-    pub TooltipClass
-);
-style_class!(
-    /// A class for the tooltip container view.
-    pub TooltipContainerClass
-);
+style_class!(pub TooltipClass);
+style_class!(pub TooltipContainerClass);
 
 prop!(pub Delay: Duration {} = Duration::from_millis(600));
 
@@ -34,15 +32,13 @@ prop_extractor! {
 /// A view that displays a tooltip for its child.
 pub struct Tooltip {
     id: ViewId,
-    /// Holds the hover point and time token needed to
-    /// evaluate if - or when and where - display tooltip.
-    hover_point: Option<(Point, TimerToken)>,
-    /// Tooltip overlay view id.
+    hover: Option<(Point, TimerToken)>,
     overlay: Rc<RefCell<Option<ViewId>>>,
-    /// Provided by user function that dislays tooltip content.
     tip: Rc<dyn Fn() -> Box<dyn View>>,
-    /// A tooltip specific styles (currently its just a delay).
     style: TooltipStyle,
+    tip_style: Style,
+    scale: f64,
+    window_origin: Option<Point>,
 }
 
 /// A view that displays a tooltip for its child.
@@ -57,9 +53,12 @@ pub fn tooltip<V: IntoView + 'static, T: IntoView + 'static>(
     Tooltip {
         id,
         tip: Rc::new(move || tip().into_any()),
-        hover_point: None,
+        hover: None,
         overlay: overlay.clone(),
         style: Default::default(),
+        tip_style: Default::default(),
+        scale: 1.0,
+        window_origin: None,
     }
     .class(TooltipContainerClass)
     .on_cleanup(move || {
@@ -75,56 +74,55 @@ impl View for Tooltip {
     }
 
     fn update(&mut self, _cx: &mut UpdateCx, state: Box<dyn std::any::Any>) {
-        if let Ok(token) = state.downcast::<TimerToken>()
-            && self.hover_point.map(|(_, t)| t) == Some(*token)
-        {
-            let point =
-                self.id.get_visual_origin() + self.hover_point.unwrap().0.to_vec2() + (0., 10.);
-            let overlay_id = add_overlay(
-                (self.tip)()
-                    .class(TooltipClass)
-                    .style(move |s| s.inset_left(point.x).inset_top(point.y)),
-            );
-            overlay_id.set_style_parent(self.id);
-            *self.overlay.borrow_mut() = Some(overlay_id);
+        if let Ok(token) = state.downcast::<TimerToken>() {
+            if let Some(window_origin) = self.window_origin {
+                if self.hover.map(|(_, t)| t) == Some(*token) {
+                    let tip = self.tip.clone();
+
+                    let tip_style = self.tip_style.clone();
+                    let overlay_id = add_overlay(
+                        window_origin
+                            + self.hover.unwrap().0.to_vec2()
+                            + (10. / self.scale, 10. / self.scale),
+                        move |_| tip().style(move |_| tip_style.clone()),
+                    );
+                    // overlay_id.request_all();
+                    *self.overlay.borrow_mut() = Some(overlay_id);
+                }
+            }
         }
     }
 
     fn style_pass(&mut self, cx: &mut crate::context::StyleCx<'_>) {
         self.style.read(cx);
-        if self.overlay.borrow().is_some() && self.id.is_hidden() {
-            let id = self.overlay.take().unwrap();
-            self.hover_point = None;
-            remove_overlay(id);
+        self.scale = cx.app_state.scale;
+
+        self.tip_style =
+            Style::new().apply_classes_from_context(&[TooltipClass::class_ref()], &cx.current);
+
+        for child in self.id.children() {
+            cx.style_view(child);
         }
     }
 
-    fn event_capture(&mut self, cx: &mut EventCx) -> EventPropagation {
-        self.handle_event(cx)
-    }
-
-    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
-        if cx.phase != Phase::Target {
-            return EventPropagation::Continue;
-        }
-        self.handle_event(cx)
-    }
-}
-
-impl Tooltip {
-    fn handle_event(&mut self, cx: &mut EventCx) -> EventPropagation {
-        match &cx.event {
-            Event::Pointer(PointerEvent::Move(pu)) => {
-                if self.overlay.borrow().is_none() {
+    fn event_before_children(&mut self, cx: &mut EventCx, event: &Event) -> EventPropagation {
+        match &event {
+            Event::PointerMove(e) => {
+                if self.overlay.borrow().is_none() && cx.app_state.dragging.is_none() {
                     let id = self.id();
                     let token = exec_after(self.style.delay(), move |token| {
                         id.update_state(token);
                     });
-                    self.hover_point = Some((pu.current.logical_point(), token));
+                    self.hover = Some((e.pos, token));
                 }
             }
-            Event::Pointer(_) | Event::Key(_) => {
-                self.hover_point = None;
+            Event::PointerLeave
+            | Event::PointerDown(_)
+            | Event::PointerUp(_)
+            | Event::PointerWheel(_)
+            | Event::KeyUp(_)
+            | Event::KeyDown(_) => {
+                self.hover = None;
                 if let Some(id) = self.overlay.borrow_mut().take() {
                     remove_overlay(id);
                 }
@@ -133,30 +131,17 @@ impl Tooltip {
         }
         EventPropagation::Continue
     }
+
+    fn compute_layout(
+        &mut self,
+        cx: &mut crate::context::ComputeLayoutCx,
+    ) -> Option<peniko::kurbo::Rect> {
+        self.window_origin = Some(cx.window_origin);
+        default_compute_layout(self.id, cx)
+    }
 }
 
-/// Adds a [tooltip] function to a type that implements [`IntoView`].
 pub trait TooltipExt {
-    /// Adds a tooltip to the view.
-    ///
-    /// ### Examples
-    /// ```rust
-    /// # use floem::views::TooltipExt;
-    /// # use floem::views::{text, Decorators};
-    /// # use floem::prelude::{RwSignal, SignalGet};
-    /// // Simple usage:
-    /// let simple = text("A text with tooltip")
-    ///     .tooltip(|| "This is a tooltip.");
-    /// // More complex usage:
-    /// let mut click_counter = RwSignal::new(0);
-    /// let complex = text("A text with a tooltip that changes on click")
-    ///     .on_click_stop(move|_| click_counter += 1)
-    ///     .tooltip(move || format!("Clicked {} times on the label", click_counter.get()));
-    /// ```
-    /// ### Reactivity
-    /// This function is not reactive, but it is computing its result on every tooltip trigger.
-    /// It is possible then to have different tooltip output, but the output it will **not** change
-    /// once while displaying a hover.
     fn tooltip<V: IntoView + 'static>(self, tip: impl Fn() -> V + 'static) -> Tooltip;
 }
 

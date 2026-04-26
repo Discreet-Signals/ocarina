@@ -1,10 +1,11 @@
 use std::{borrow::Cow, fmt::Debug, ops::Range, rc::Rc};
 
 use crate::{
-    peniko::Color,
+    keyboard::Modifiers,
     peniko::color::palette,
+    peniko::Color,
     reactive::{RwSignal, Scope},
-    text::{Attrs, AttrsList, FamilyOwned, FontWeight, FontWidth},
+    text::{Attrs, AttrsList, FamilyOwned, Stretch, Weight},
     views::EditorCustomStyle,
 };
 use floem_editor_core::{
@@ -22,10 +23,8 @@ use floem_reactive::SignalGet;
 use lapce_xi_rope::Rope;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use ui_events::keyboard::Modifiers;
 
 use super::{
-    Editor, EditorStyle,
     actions::CommonAction,
     command::{Command, CommandExecuted},
     gutter::GutterClass,
@@ -34,6 +33,7 @@ use super::{
     normal_compute_screen_lines,
     phantom_text::{PhantomText, PhantomTextKind, PhantomTextLine},
     view::{ScreenLines, ScreenLinesBase},
+    Editor, EditorStyle,
 };
 
 // TODO(minor): Should we get rid of this now that this is in floem?
@@ -73,9 +73,8 @@ pub struct Preedit {
     pub offset: usize,
 }
 
-/// IME Preedit
-///
-/// This is used for IME input, and must be owned by the `Document`.
+/// IME Preedit  
+/// This is used for IME input, and must be owned by the `Document`.  
 #[derive(Debug, Clone)]
 pub struct PreeditData {
     pub preedit: RwSignal<Option<Preedit>>,
@@ -88,10 +87,9 @@ impl PreeditData {
     }
 }
 
-/// A document. This holds text.
+/// A document. This holds text.  
 pub trait Document: DocumentPhantom + ::std::any::Any {
-    /// Get the text of the document
-    ///
+    /// Get the text of the document  
     /// Note: typically you should call [`Document::rope_text`] as that provides more checks and
     /// utility functions.
     fn text(&self) -> Rope;
@@ -102,8 +100,7 @@ pub trait Document: DocumentPhantom + ::std::any::Any {
 
     fn cache_rev(&self) -> RwSignal<u64>;
 
-    /// Find the next/previous offset of the match of the given character.
-    ///
+    /// Find the next/previous offset of the match of the given character.  
     /// This is intended for use by the [`Movement::NextUnmatched`](floem_editor_core::movement::Movement::NextUnmatched) and
     /// [`Movement::PreviousUnmatched`](floem_editor_core::movement::Movement::PreviousUnmatched) commands.
     fn find_unmatched(&self, offset: usize, previous: bool, ch: char) -> usize {
@@ -118,8 +115,7 @@ pub trait Document: DocumentPhantom + ::std::any::Any {
         new_offset.unwrap_or(offset)
     }
 
-    /// Find the offset of the matching pair character.
-    ///
+    /// Find the offset of the matching pair character.  
     /// This is intended for use by the [`Movement::MatchPairs`](floem_editor_core::movement::Movement::MatchPairs) command.
     fn find_matching_pair(&self, offset: usize) -> usize {
         WordCursor::new(&self.text(), offset)
@@ -154,8 +150,7 @@ pub trait Document: DocumentPhantom + ::std::any::Any {
         })
     }
 
-    /// Compute the visible screen lines.
-    ///
+    /// Compute the visible screen lines.  
     /// Note: you should typically *not* need to implement this, unless you have some custom
     /// behavior. Unfortunately this needs an `&self` to be a trait object. So don't call `.update`
     /// on `Self`
@@ -167,8 +162,7 @@ pub trait Document: DocumentPhantom + ::std::any::Any {
         normal_compute_screen_lines(editor, base)
     }
 
-    /// Run a command on the document.
-    ///
+    /// Run a command on the document.  
     /// The `ed` will contain this document (at some level, if it was wrapped then it may not be
     /// directly `Rc<Self>`)
     fn run_command(
@@ -181,18 +175,15 @@ pub trait Document: DocumentPhantom + ::std::any::Any {
 
     fn receive_char(&self, ed: &Editor, c: &str);
 
-    /// Perform a single edit.
-    ///
+    /// Perform a single edit.  
     fn edit_single(&self, selection: Selection, content: &str, edit_type: EditType) {
         let mut iter = std::iter::once((selection, content));
         self.edit(&mut iter, edit_type);
     }
 
-    /// Perform the edit(s) on this document.
-    ///
+    /// Perform the edit(s) on this document.  
     /// This intentionally does not require an `Editor` as this is primarily intended for use by
-    /// code that wants to modify the document from 'outside' the usual keybinding/command logic.
-    ///
+    /// code that wants to modify the document from 'outside' the usual keybinding/command logic.  
     /// ```rust,ignore
     /// let editor: TextEditor = text_editor();
     /// let doc: Rc<dyn Document> = editor.doc();
@@ -280,8 +271,7 @@ impl std::fmt::Display for RenderWhitespace {
     }
 }
 
-/// There's currently three stages of styling text:
-///
+/// There's currently three stages of styling text:  
 /// - `Attrs`: This sets the default values for the text
 ///   - Default font size, font family, etc.
 /// - `AttrsList`: This lets you set spans of text to have different styling
@@ -313,17 +303,17 @@ pub trait Styling {
         Cow::Borrowed(&[FamilyOwned::SansSerif])
     }
 
-    fn weight(&self, _edid: EditorId, _line: usize) -> FontWeight {
-        FontWeight::NORMAL
+    fn weight(&self, _edid: EditorId, _line: usize) -> Weight {
+        Weight::NORMAL
     }
 
     // TODO(minor): better name?
-    fn italic_style(&self, _edid: EditorId, _line: usize) -> crate::text::FontStyle {
-        crate::text::FontStyle::Normal
+    fn italic_style(&self, _edid: EditorId, _line: usize) -> crate::text::Style {
+        crate::text::Style::Normal
     }
 
-    fn font_width(&self, _edid: EditorId, _line: usize) -> FontWidth {
-        FontWidth::NORMAL
+    fn stretch(&self, _edid: EditorId, _line: usize) -> Stretch {
+        Stretch::Normal
     }
 
     /// Which line the indentation line should be based off of
@@ -344,7 +334,7 @@ pub trait Styling {
     // TODO: get other style information based on EditorColor enum?
     // TODO: line_style equivalent?
 
-    /// Apply custom attribute styles to the line
+    /// Apply custom attribute styles to the line  
     fn apply_attr_styles(
         &self,
         _edid: EditorId,
@@ -435,17 +425,18 @@ pub fn default_dark_color(mut style: EditorCustomStyle) -> EditorCustomStyle {
 
 pub type DocumentRef = Rc<dyn Document>;
 
-/// A document-wrapper for handling commands.
+/// A document-wrapper for handling commands.  
 pub struct ExtCmdDocument<D, F> {
     pub doc: D,
-    /// Called whenever [`Document::run_command`] is called.
-    ///
+    /// Called whenever [`Document::run_command`] is called.  
     /// If `handler` returns [`CommandExecuted::Yes`] then the default handler on `doc: D` will not
     /// be called.
     pub handler: F,
 }
-impl<D: Document, F: Fn(&Editor, &Command, Option<usize>, Modifiers) -> CommandExecuted + 'static>
-    ExtCmdDocument<D, F>
+impl<
+        D: Document,
+        F: Fn(&Editor, &Command, Option<usize>, Modifiers) -> CommandExecuted + 'static,
+    > ExtCmdDocument<D, F>
 {
     pub fn new(doc: D, handler: F) -> ExtCmdDocument<D, F> {
         ExtCmdDocument { doc, handler }
@@ -585,9 +576,9 @@ pub struct SimpleStyling {
     /// If less than 5.0, line height will be a multiple of the font size
     line_height: f32,
     font_family: Vec<FamilyOwned>,
-    weight: FontWeight,
-    italic_style: crate::text::FontStyle,
-    font_width: FontWidth,
+    weight: Weight,
+    italic_style: crate::text::Style,
+    stretch: Stretch,
     tab_width: usize,
     atomic_soft_tabs: bool,
 }
@@ -620,18 +611,18 @@ impl SimpleStyling {
         self.increment_id();
     }
 
-    pub fn set_weight(&mut self, weight: FontWeight) {
+    pub fn set_weight(&mut self, weight: Weight) {
         self.weight = weight;
         self.increment_id();
     }
 
-    pub fn set_italic_style(&mut self, italic_style: crate::text::FontStyle) {
+    pub fn set_italic_style(&mut self, italic_style: crate::text::Style) {
         self.italic_style = italic_style;
         self.increment_id();
     }
 
-    pub fn set_stretch(&mut self, stretch: FontWidth) {
-        self.font_width = stretch;
+    pub fn set_stretch(&mut self, stretch: Stretch) {
+        self.stretch = stretch;
         self.increment_id();
     }
 
@@ -652,9 +643,9 @@ impl Default for SimpleStyling {
             font_size: 16,
             line_height: 1.5,
             font_family: vec![FamilyOwned::SansSerif],
-            weight: FontWeight::NORMAL,
-            italic_style: crate::text::FontStyle::Normal,
-            font_width: FontWidth::NORMAL,
+            weight: Weight::NORMAL,
+            italic_style: crate::text::Style::Normal,
+            stretch: Stretch::Normal,
             tab_width: 4,
             atomic_soft_tabs: false,
         }
@@ -684,16 +675,16 @@ impl Styling for SimpleStyling {
         Cow::Borrowed(&self.font_family)
     }
 
-    fn weight(&self, _edid: EditorId, _line: usize) -> FontWeight {
+    fn weight(&self, _edid: EditorId, _line: usize) -> Weight {
         self.weight
     }
 
-    fn italic_style(&self, _edid: EditorId, _line: usize) -> crate::text::FontStyle {
+    fn italic_style(&self, _edid: EditorId, _line: usize) -> crate::text::Style {
         self.italic_style
     }
 
-    fn font_width(&self, _edid: EditorId, _line: usize) -> FontWidth {
-        self.font_width
+    fn stretch(&self, _edid: EditorId, _line: usize) -> Stretch {
+        self.stretch
     }
 
     fn tab_width(&self, _edid: EditorId, _line: usize) -> usize {
@@ -729,9 +720,9 @@ pub struct SimpleStylingBuilder {
     font_size: Option<usize>,
     line_height: Option<f32>,
     font_family: Option<Vec<FamilyOwned>>,
-    weight: Option<FontWeight>,
-    italic_style: Option<crate::text::FontStyle>,
-    font_width: Option<FontWidth>,
+    weight: Option<Weight>,
+    italic_style: Option<crate::text::Style>,
+    stretch: Option<Stretch>,
     indent_style: Option<IndentStyle>,
     tab_width: Option<usize>,
     atomic_soft_tabs: Option<bool>,
@@ -761,22 +752,22 @@ impl SimpleStylingBuilder {
 
     /// Set the font weight (such as boldness or thinness)
     /// Default: `Weight::NORMAL`
-    pub fn weight(&mut self, weight: FontWeight) -> &mut Self {
+    pub fn weight(&mut self, weight: Weight) -> &mut Self {
         self.weight = Some(weight);
         self
     }
 
     /// Set the italic style
     /// Default: `Style::Normal`
-    pub fn italic_style(&mut self, italic_style: crate::text::FontStyle) -> &mut Self {
+    pub fn italic_style(&mut self, italic_style: crate::text::Style) -> &mut Self {
         self.italic_style = Some(italic_style);
         self
     }
 
-    /// Set the font width
-    /// Default: `FontWidth::Normal`
-    pub fn font_width(&mut self, stretch: FontWidth) -> &mut Self {
-        self.font_width = Some(stretch);
+    /// Set the font stretch
+    /// Default: `Stretch::Normal`
+    pub fn stretch(&mut self, stretch: Stretch) -> &mut Self {
+        self.stretch = Some(stretch);
         self
     }
 
@@ -818,7 +809,7 @@ impl SimpleStylingBuilder {
             font_family: self.font_family.clone().unwrap_or(default.font_family),
             weight: self.weight.unwrap_or(default.weight),
             italic_style: self.italic_style.unwrap_or(default.italic_style),
-            font_width: self.font_width.unwrap_or(default.font_width),
+            stretch: self.stretch.unwrap_or(default.stretch),
             tab_width: self.tab_width.unwrap_or(default.tab_width),
             atomic_soft_tabs: self.atomic_soft_tabs.unwrap_or(default.atomic_soft_tabs),
         }

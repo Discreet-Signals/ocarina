@@ -1,21 +1,23 @@
 use floem::{
-    action::inspect,
-    prelude::*,
-    reactive::{SignalGet, SignalUpdate},
+    peniko::color::palette,
+    reactive::{create_signal, SignalGet, SignalUpdate},
     responsive::{range, ScreenSize},
-    text::TextOverflowChanged,
+    style::TextOverflow,
     unit::UnitExt,
+    views::{h_stack, label, stack, text, Decorators},
+    IntoView,
 };
 
 fn app_view() -> impl IntoView {
-    let is_text_overflown = RwSignal::new(false);
+    let (is_text_overflown, set_is_text_overflown) = create_signal(false);
 
-    Stack::new({
+    stack({
         (
-            Label::derived(|| "Resize the window to see the magic").style(|s| {
+            label(|| "Resize the window to see the magic").style(|s| {
                 s.border(1.0)
                     .border_radius(10.0)
-                    .padding(10)
+                    .padding(10.0)
+                    .margin_horiz(10.0)
                     .responsive(ScreenSize::XS, |s| s.background(palette::css::CYAN))
                     .responsive(ScreenSize::SM, |s| s.background(palette::css::PURPLE))
                     .responsive(ScreenSize::MD, |s| s.background(palette::css::ORANGE))
@@ -31,53 +33,41 @@ fn app_view() -> impl IntoView {
                         |s| s.width(300.0),
                     )
             }),
-            Label::new(
+            text(
                 "Long text that will overflow on smaller screens since the available width is less",
             )
-            .on_event_stop(
-                TextOverflowChanged::listener(),
-                move |_cx, TextOverflowChanged { is_overflowing, .. }| {
-                    is_text_overflown.set(*is_overflowing);
-                },
-            )
+            .on_text_overflow(move |is_overflown| {
+                set_is_text_overflown.update(|overflown| *overflown = is_overflown);
+            })
             .style(move |s| {
                 s.background(palette::css::DIM_GRAY)
+                    .padding(10.0)
                     .color(palette::css::WHITE_SMOKE)
+                    .margin_top(30.)
                     .width_pct(70.0)
-                    .padding(10)
                     .font_size(20.0)
                     .max_width(800.)
-                    .text_ellipsis()
+                    .text_overflow(TextOverflow::Ellipsis)
             }),
-            Stack::horizontal((
-                Label::new("The text fits in the available width?:"),
-                Label::derived(move || {
-                    if is_text_overflown.get() { "No" } else { "Yes" }.to_string()
-                })
-                .style(move |s| {
-                    s.color(if is_text_overflown.get() {
-                        palette::css::RED
-                    } else {
-                        palette::css::GREEN
-                    })
-                    .font_bold()
-                }),
-            ))
-            .style(|s| s.padding(10)),
+            h_stack((
+                text("The text fits in the available width?:"),
+                label(move || if is_text_overflown.get() { "No" } else { "Yes" }.to_string())
+                    .style(move |s| {
+                        s.color(if is_text_overflown.get() {
+                            palette::css::RED
+                        } else {
+                            palette::css::GREEN
+                        })
+                        .font_bold()
+                    }),
+            )),
         )
     })
     .style(|s| {
         s.size(100.pct(), 100.pct())
             .flex_col()
-            .gap(10)
             .justify_center()
             .items_center()
-            .padding(20)
-    })
-    .on_event_stop(el::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
-        if *key == Key::Named(NamedKey::F11) {
-            inspect();
-        }
     })
 }
 

@@ -1,17 +1,9 @@
-use std::time::Duration;
-
-use floem::{
-    kurbo::Stroke,
-    prelude::*,
-    style::{SelectionCornerRadius, Transition},
-    text::FontWeight,
-    theme::StyleThemeExt,
-};
+use floem::{prelude::*, style::SelectionCornerRadius, text::Weight};
 
 use crate::form::{form, form_item};
 
 pub fn text_input_view() -> impl IntoView {
-    let text = RwSignal::new(String::new());
+    let text = RwSignal::new("".to_string());
 
     const LIGHT_GRAY_224: Color = Color::from_rgb8(224, 224, 224);
     const MEDIUM_GRAY_189: Color = Color::from_rgb8(189, 189, 189);
@@ -25,19 +17,19 @@ pub fn text_input_view() -> impl IntoView {
     form((
         form_item(
             "Simple Input:",
-            TextInput::new(text)
+            text_input(text)
                 .placeholder("Placeholder text")
-                .style(|s| s.width(250.)),
+                .style(|s| s.width(250.))
+                .keyboard_navigable(),
         ),
         form_item(
             "Styled Input:",
-            TextInput::new(text)
+            text_input(text)
                 .placeholder("Placeholder text")
                 .style(|s| {
-                    s.border(Stroke::new(1.5).with_dashes(0., [5., 5.]))
+                    s.border(1.5)
                         .width(250.0)
                         .background(LIGHT_GRAY_BG)
-                        .transition_background(Transition::spring(Duration::from_millis(300)))
                         .border_radius(15.0)
                         .border_color(MEDIUM_GRAY_189)
                         .padding(10.0)
@@ -48,21 +40,14 @@ pub fn text_input_view() -> impl IntoView {
                                 .hover(|s| s.border_color(SKY_BLUE))
                         })
                         .class(PlaceholderTextClass, |s| {
-                            s.with_theme(|s, t| s.color(t.primary_muted()))
-                                .font_style(floem::text::FontStyle::Italic)
-                                .font_weight(FontWeight::BOLD)
+                            s.color(SKY_BLUE)
+                                .font_style(floem::text::Style::Italic)
+                                .font_weight(Weight::BOLD)
                         })
                         .font_family("monospace".to_owned())
                 })
-                .on_event_stop(TextInputEnter::listener(), |_, _| {
-                    println!("Received an Accept!")
-                }),
+                .keyboard_navigable(),
         ),
-        form_item(
-            "Disabled Input:",
-            TextInput::new(text)
-                .placeholder("Disabled input")
-                .style(|s| s.set_disabled(true).width(250.0)),
-        ),
+        form_item("Disabled Input:", text_input(text).disabled(|| true)),
     ))
 }

@@ -15,48 +15,35 @@ pub mod lists;
 pub mod radio_buttons;
 pub mod rich_text;
 pub mod slider;
-pub mod tabs;
-pub mod texteditor;
 
 use floem::{
-    action::{set_theme, set_window_menu, toggle_global_theme, toggle_window_theme},
+    event::{Event, EventListener},
+    keyboard::{Key, NamedKey},
     kurbo::Size,
-    menu::*,
-    muda::{AboutMetadataBuilder, PredefinedMenuItem},
     new_window,
-    prelude::{palette::css, *},
-    style::{Background, CursorStyle, CustomStylable, Transition},
-    theme::StyleThemeExt,
-    ui_events::keyboard::{Key, KeyboardEvent, Modifiers, NamedKey},
-    window::{Theme, WindowConfig, WindowId},
+    prelude::*,
+    style::{Background, CursorStyle, Transition},
+    window::WindowConfig,
 };
 
-pub const OS_MOD: Modifiers = if cfg!(target_os = "macos") {
-    Modifiers::META
-} else {
-    Modifiers::CONTROL
-};
-
-fn app_view(window_id: WindowId) -> impl IntoView {
+fn app_view() -> impl IntoView {
     let tabs: Vec<&'static str> = vec![
         "Label",
         "Button",
-        "Input",
-        "Text Editor",
-        "Lists",
-        "Image",
-        "Dropdown",
         "Checkbox",
         "Radio",
-        "Tabs",
-        "Slider",
+        "Input",
         "Canvas",
+        "List",
         "Menu",
-        "Rich Text",
+        "RichText",
+        "Image",
         "Clipboard",
+        "Slider",
+        "Dropdown",
         "Animation",
         "Draggable",
-        "Dropped File",
+        "DroppedFile",
         "Files",
     ];
 
@@ -68,73 +55,79 @@ fn app_view(window_id: WindowId) -> impl IntoView {
             "Radio" => radio_buttons::radio_buttons_view().into_any(),
             "Input" => inputs::text_input_view().into_any(),
             "Canvas" => canvas::canvas_view().into_any(),
-            "Lists" => lists::list_view().into_any(),
-            "Tabs" => tabs::tab_view().into_any(),
+            "List" => lists::virt_list_view().into_any(),
             "Menu" => context_menu::menu_view().into_any(),
-            "Rich Text" => rich_text::rich_text_view().into_any(),
+            "RichText" => rich_text::rich_text_view().into_any(),
             "Image" => images::img_view().into_any(),
             "Clipboard" => clipboard::clipboard_view().into_any(),
             "Slider" => slider::slider_view().into_any(),
             "Dropdown" => dropdown::dropdown_view().into_any(),
             "Animation" => animation::animation_view().into_any(),
             "Draggable" => draggable::draggable_view().into_any(),
-            "Dropped File" => dropped_file::dropped_file_view().into_any(),
-            #[cfg(feature = "full")]
+            "DroppedFile" => dropped_file::dropped_file_view().into_any(),
             "Files" => files::files_view().into_any(),
-            "Text Editor" => texteditor::editor_view().into_any(),
-            _ => Label::derived(|| "Not implemented".to_owned()).into_any(),
+            _ => label(|| "Not implemented".to_owned()).into_any(),
         }
         .debug_name(it.to_string())
     };
 
     let tabs = RwSignal::new(tabs);
 
-    let side_bar_list = tabs
+    let (active_tab, set_active_tab) = create_signal(0);
+
+    let side_tab_bar = tabs
         .get()
         .into_iter()
-        .map(move |item| {
-            item.style(move |s| {
-                s.font_size(18.)
-                    .height(36.0)
-                    .width_full()
-                    .items_center()
-                    .transition(Background, Transition::ease_in_out(100.millis()))
-                    .active(|s| {
-                        s.with_theme(|s, t| {
-                            s.background(t.primary())
-                                .hover(|s| s.background(t.primary_muted()))
-                                .border_radius(t.border_radius())
+        .enumerate()
+        .map(move |(idx, item)| {
+            item.draggable()
+                .style(move |s| {
+                    s.flex_row()
+                        .font_size(18.)
+                        .padding(5.0)
+                        .width(100.pct())
+                        .height(36.0)
+                        .transition(Background, Transition::ease_in_out(100.millis()))
+                        .items_center()
+                        .border_bottom(1.)
+                        .border_color(palette::css::LIGHT_GRAY)
+                        .selected(|s| {
+                            s.border(2.)
+                                .border_color(palette::css::BLUE)
+                                .background(palette::css::GRAY.with_alpha(0.6))
                         })
-                    })
-                    .hover(|s| s.cursor(CursorStyle::Pointer))
-            })
+                        .hover(|s| {
+                            s.background(palette::css::LIGHT_GRAY)
+                                .apply_if(idx == active_tab.get(), |s| {
+                                    s.background(palette::css::GRAY)
+                                })
+                                .cursor(CursorStyle::Pointer)
+                        })
+                })
+                .dragging_style(|s| s.background(palette::css::GRAY.with_alpha(0.6)))
         })
         .list()
-        .style(|s| {
-            s.flex_col()
-                .width(140.0)
-                .flex_grow(1.)
-                .even(|s| s.background(css::PINK))
-        });
-
-    let active_tab = side_bar_list.selection();
-
-    let side_tab_bar = side_bar_list
+        .on_select(move |idx| {
+            if let Some(idx) = idx {
+                set_active_tab.set(idx);
+            }
+        })
+        .keyboard_navigable()
+        .style(|s| s.flex_col().width(140.0))
         .scroll()
         .debug_name("Side Tab Bar")
-        .custom_style(|s| s.shrink_to_fit())
+        .scroll_style(|s| s.shrink_to_fit())
         .style(|s| {
             s.border(1.)
-                .flex_col()
                 .padding(3.)
                 .border_color(palette::css::GRAY)
                 .class(LabelClass, |s| s.selectable(false))
         });
 
-    let inspector = Button::new("Open Inspector").action(floem::action::inspect);
+    let inspector = button("Open Inspector").action(floem::action::inspect);
 
-    let new_window_button = Button::new("Open In Window").action(move || {
-        let name = tabs.with(|tabs| tabs.get(active_tab.get().unwrap_or(0)).copied());
+    let new_window = button("Open In Window").action(move || {
+        let name = tabs.with(|tabs| tabs.get(active_tab.get()).copied());
         new_window(
             move |_| {
                 create_view(name.unwrap_or_default())
@@ -149,221 +142,36 @@ fn app_view(window_id: WindowId) -> impl IntoView {
         );
     });
 
-    let left_side_bar = Stack::vertical((side_tab_bar, new_window_button, inspector))
+    let left_side_bar = (side_tab_bar, new_window, inspector)
+        .v_stack()
         .debug_name("Left Side Bar")
         .style(|s| s.height_full().row_gap(5.0));
 
     let tab = tab(
-        move || Some(active_tab.get().unwrap_or(0)),
+        move || active_tab.get(),
         move || tabs.get(),
         |it| *it,
         create_view,
     )
     .debug_name("Active Tab")
-    .style(|s| s.flex_col().flex_grow(1.).items_start());
+    .style(|s| s.flex_col().items_start());
 
     let tab = tab.scroll().style(|s| s.size_full());
 
-    let floem_logo = svg(include_str!("../assets/floem.svg"))
-        .style(|s| s.unset_color().size_full().size(50, 50))
-        .overlay()
-        .style(|s| {
-            s.absolute()
-                .z_index(1)
-                .size(50, 50)
-                .inset_bottom(20.)
-                .inset_right(15.)
-        });
-
-    let view = Stack::horizontal((left_side_bar, tab, floem_logo))
+    let view = (left_side_bar, tab)
+        .h_stack()
         .style(|s| s.padding(5.0).width_full().height_full().col_gap(5.0))
         .window_title(|| "Widget Gallery".to_owned());
 
-    let file_submenu = |m: SubMenu| {
-        m.item("New Window", |i| {
-            i.action(move || {
-                new_window(app_view, None);
-            })
-        })
-        .separator()
-        .item("Close Window", |i| {
-            i.action(move || {
-                floem::close_window(window_id);
-            })
-        })
-        .item("Quit Widget Gallery", |i| {
-            i.action(|| {
-                floem::quit_app();
-            })
-        })
-    };
-
-    let widget_submenu = |m: SubMenu| {
-        tabs.with(|tabs| {
-            tabs.iter().enumerate().fold(m, |menu, (idx, &tab)| {
-                menu.item(tab, move |i| i.action(move || active_tab.set(Some(idx))))
-            })
-        })
-    };
-
-    let view_submenu = |m: SubMenu| {
-        m.item("Inspector", |i| {
-            i.action(|| {
+    view.on_event_stop(EventListener::KeyUp, move |e| {
+        if let Event::KeyUp(e) = e {
+            if e.key.logical_key == Key::Named(NamedKey::F11) {
                 floem::action::inspect();
-            })
-        })
-        .separator()
-        .submenu("Navigate to Widget", widget_submenu)
-        .separator()
-        .item("Next Tab", |i| {
-            i.action(move || {
-                let current = active_tab.get().unwrap_or(0);
-                let tab_count = tabs.get().len();
-                active_tab.set(Some((current + 1) % tab_count));
-            })
-        })
-        .item("Previous Tab", |i| {
-            i.action(move || {
-                let current = active_tab.get().unwrap_or(0);
-                let tab_count = tabs.get().len();
-                active_tab.set(if current == 0 {
-                    Some(tab_count - 1)
-                } else {
-                    Some(current - 1)
-                });
-            })
-        })
-    };
-
-    let theme_submenu = |m: SubMenu| {
-        m.item("Toggle Global Theme", |i| i.action(toggle_global_theme))
-            .item("Toggle Window Theme", |i| i.action(toggle_window_theme))
-            .separator()
-            .item("Set Light Theme", |i| {
-                i.action(|| set_theme(Some(Theme::Light)))
-            })
-            .item("Set Dark Theme", |i| {
-                i.action(|| set_theme(Some(Theme::Dark)))
-            })
-            .item("Follow OS Theme", |i| i.action(|| set_theme(None)))
-    };
-
-    let window_submenu = |m: SubMenu| {
-        m.item("Open Current Tab in New Window", |i| {
-            i.action(move || {
-                let name = tabs.with(|tabs| tabs.get(active_tab.get().unwrap_or(0)).copied());
-                new_window(
-                    move |_| {
-                        create_view(name.unwrap_or_default())
-                            .scroll()
-                            .style(|s| s.size_full())
-                    },
-                    Some(
-                        WindowConfig::default()
-                            .size(Size::new(700.0, 400.0))
-                            .title(name.unwrap_or_default()),
-                    ),
-                );
-            })
-        })
-        .separator()
-        .item("Show Side Panel", |i| {
-            i.checked(true).action(|| {
-                println!("Toggle sidebar");
-            })
-        })
-    };
-
-    let help_submenu = |m: SubMenu| {
-        m.item("About Widget Gallery", |i| {
-            i.action(|| {
-                println!("Floem Widget Gallery - A showcase of UI components built with Floem");
-            })
-        })
-        .separator()
-        .item("Floem Documentation", |i| {
-            i.action(|| {
-                println!("Opening Floem documentation...");
-            })
-        })
-        .item("GitHub Repository", |i| {
-            i.action(|| {
-                println!("Opening GitHub repository...");
-            })
-        })
-    };
-    set_window_menu(
-        Menu::new()
-            .submenu("File", file_submenu)
-            .submenu("View", view_submenu)
-            .submenu("Window", window_submenu)
-            .submenu("Theme", theme_submenu)
-            .submenu("Help", help_submenu)
-            .submenu("About", |s| {
-                s.predefined(&PredefinedMenuItem::about(
-                    Some("widget-gallery"),
-                    Some(
-                        AboutMetadataBuilder::new()
-                            .name(Some("widget-gallery"))
-                            .license(Some("MIT"))
-                            .version(Some("0.1.0"))
-                            .copyright(Some("Floem Authors"))
-                            .build(),
-                    ),
-                ))
-            }),
-    );
-
-    let mut window_scale = RwSignal::new(1.);
-
-    view.on_event_stop(
-        listener::KeyUp,
-        move |_cx, KeyboardEvent { modifiers, key, .. }| {
-            if *key == Key::Named(NamedKey::F11) {
-                floem::action::inspect();
-            } else if *key == Key::Character("q".into()) && modifiers.contains(OS_MOD) {
-                floem::quit_app();
-            } else if *key == Key::Character("w".into()) && modifiers.contains(OS_MOD) {
-                floem::close_window(window_id);
             }
-        },
-    )
-    .on_event_stop(
-        el::KeyDown,
-        move |_, KeyboardEvent { key, modifiers, .. }| match key {
-            Key::Character(ch) if (ch == "=" || ch == "+") && modifiers.contains(OS_MOD) => {
-                window_scale *= 1.1;
-                floem::action::set_window_scale(window_scale.get());
-            }
-
-            Key::Character(ch) if ch == "-" && *modifiers == OS_MOD => {
-                window_scale /= 1.1;
-                floem::action::set_window_scale(window_scale.get());
-            }
-
-            Key::Character(ch) if ch == "0" && *modifiers == OS_MOD => {
-                window_scale.set(1.);
-                floem::action::set_window_scale(window_scale.get());
-            }
-            _ => {}
-        },
-    )
+        }
+    })
 }
 
 fn main() {
-    floem::Application::new()
-        .window(app_view, Some(WindowConfig::default().size((1200., 800.))))
-        .on_event(|ae| match ae {
-            floem::AppEvent::WillTerminate => {
-                println!("terminating");
-            }
-            floem::AppEvent::Reopen {
-                has_visible_windows,
-            } => {
-                if !has_visible_windows {
-                    new_window(app_view, None);
-                }
-            }
-        })
-        .run();
+    floem::launch(app_view);
 }

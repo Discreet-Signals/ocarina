@@ -1,18 +1,16 @@
-use floem_reactive::Effect;
+use floem_reactive::create_effect;
 use taffy::FlexDirection;
-use ui_events::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey};
 
-use crate::event::{EventPropagation, listener};
-use crate::style::StyleSelector;
-use crate::style::recalc::StyleReason;
-use crate::{ViewId, prelude::*};
+use crate::event::{Event, EventListener, EventPropagation};
+use crate::{prelude::*, ViewId};
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
 pub struct VirtualList<T: 'static> {
     stack: VirtualStack<(usize, T)>,
-    pub selection: RwSignal<Option<usize>>,
+    selection: RwSignal<Option<usize>>,
 }
 
 impl<T> VirtualList<T> {
@@ -133,7 +131,7 @@ impl<T: 'static> VirtualList<T> {
     /// });
     /// ```
     pub fn on_select(self, on_select: impl Fn(Option<usize>) + 'static) -> Self {
-        Effect::new(move |_| {
+        create_effect(move |_| {
             let selection = self.selection.get();
             on_select(selection);
         });
@@ -164,8 +162,8 @@ where
         move |(_i, d)| key_fn(d),
         move |(index, e)| {
             let child = view_fn(index, e).class(ListItemClass);
-            let child_id = child.view_id();
-            child.action(move || {
+            let child_id = child.id();
+            child.on_click_stop(move |_| {
                 if selection.get_untracked() != Some(index) {
                     selection.set(Some(index));
                     child_id.scroll_to(None);
@@ -173,57 +171,58 @@ where
                         return;
                     };
                     parent.update_state(index);
-                    parent.request_style(StyleReason::with_selector(StyleSelector::Selected));
+                    parent.request_style_recursive();
                 }
             })
         },
-    );
+    )
+    .style(|s| s.size_full());
 
     let stack_id = stack.id();
 
-    Effect::new(move |_| {
-        if let Some(idx) = selection.get() {
-            stack_id.update_state(idx);
-        }
-    });
-
     let direction = stack.direction;
 
-    let stack = stack.class(ListClass).on_event(
-        listener::KeyDown,
-        move |_cx, KeyboardEvent { key, .. }| {
-            match key {
-                Key::Named(NamedKey::Home) => {
-                    if length.get_untracked() > 0 {
-                        selection.set(Some(0));
-                        stack_id.update_state(0_usize); // Must be usize to match state type
+    let stack =
+        stack
+            .class(ListClass)
+            .keyboard_navigable()
+            .on_event(EventListener::KeyDown, move |e| {
+                if let Event::KeyDown(key_event) = e {
+                    stack_id.request_style_recursive();
+                    match key_event.key.logical_key {
+                        Key::Named(NamedKey::Home) => {
+                            if length.get_untracked() > 0 {
+                                selection.set(Some(0));
+                                stack_id.update_state(0_usize); // Must be usize to match state type
+                            }
+                            EventPropagation::Stop
+                        }
+                        Key::Named(NamedKey::End) => {
+                            let len = length.get_untracked();
+                            if len > 0 {
+                                selection.set(Some(len - 1));
+                                stack_id.update_state(len - 1);
+                            }
+                            EventPropagation::Stop
+                        }
+                        Key::Named(
+                            named_key @ (NamedKey::ArrowUp
+                            | NamedKey::ArrowDown
+                            | NamedKey::ArrowLeft
+                            | NamedKey::ArrowRight),
+                        ) => handle_arrow_key(
+                            selection,
+                            length.get_untracked(),
+                            direction.get_untracked(),
+                            stack_id,
+                            named_key,
+                        ),
+                        _ => EventPropagation::Continue,
                     }
-                    EventPropagation::Stop
+                } else {
+                    EventPropagation::Continue
                 }
-                Key::Named(NamedKey::End) => {
-                    let len = length.get_untracked();
-                    if len > 0 {
-                        selection.set(Some(len - 1));
-                        stack_id.update_state(len - 1);
-                    }
-                    EventPropagation::Stop
-                }
-                Key::Named(
-                    named_key @ (NamedKey::ArrowUp
-                    | NamedKey::ArrowDown
-                    | NamedKey::ArrowLeft
-                    | NamedKey::ArrowRight),
-                ) => handle_arrow_key(
-                    selection,
-                    length.get_untracked(),
-                    direction.get_untracked(),
-                    stack_id,
-                    named_key,
-                ),
-                _ => EventPropagation::Continue,
-            }
-        },
-    );
+            });
     VirtualList { stack, selection }
 }
 
@@ -232,7 +231,7 @@ fn handle_arrow_key(
     len: usize,
     direction: FlexDirection,
     stack_id: ViewId,
-    key: &NamedKey,
+    key: NamedKey,
 ) -> EventPropagation {
     let current = selection.get();
 
@@ -292,9 +291,8 @@ fn handle_arrow_key(
 
 impl<T: 'static> IntoView for VirtualList<T> {
     type V = VirtualStack<(usize, T)>;
-    type Intermediate = VirtualStack<(usize, T)>;
 
-    fn into_intermediate(self) -> Self::Intermediate {
+    fn into_view(self) -> Self::V {
         self.stack
     }
 }

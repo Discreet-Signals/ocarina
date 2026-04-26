@@ -10,18 +10,18 @@ pub fn slider_view() -> impl IntoView {
         |val| val.0.to_string(),
     );
     form::form((
-        form_item("Input Control:", TextInput::new(input)),
+        form_item("Input Control:", text_input(input)),
         form_item(
             "Default Slider:",
-            Stack::new((
+            stack((
                 slider::Slider::new_rw(slider_state).style(|s| s.width(200)),
-                Label::derived(move || format!("{:.1}%", slider_state.get().0)),
+                label(move || format!("{:.1}%", slider_state.get().0)),
             ))
             .style(|s| s.gap(10)),
         ),
         form_item(
             "Unaligned Slider:",
-            Stack::new((
+            stack((
                 slider::Slider::new_rw(slider_state)
                     .slider_style(|s| {
                         s.accent_bar_height(30.pct())
@@ -29,17 +29,18 @@ pub fn slider_view() -> impl IntoView {
                             .edge_align(false)
                     })
                     .style(|s| s.width(200)),
-                Label::derived(move || format!("{:.1}%", slider_state.get().0)),
+                label(move || format!("{:.1}%", slider_state.get().0)),
             ))
             .style(|s| s.gap(10)),
         ),
         form_item(
             "Progress bar:",
-            Stack::new((
+            stack((
                 slider::Slider::new(move || slider_state.get())
                     .slider_style(|s| s.handle_radius(0).edge_align(true))
-                    .style(|s| s.width(200).set_disabled(true)),
-                Label::derived(move || format!("{:.1}%", slider_state.get().0)),
+                    .style(|s| s.width(200))
+                    .disabled(|| true),
+                label(move || format!("{:.1}%", slider_state.get().0)),
             ))
             .style(|s| s.gap(10)),
         ),

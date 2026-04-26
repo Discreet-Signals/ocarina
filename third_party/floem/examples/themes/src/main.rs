@@ -1,14 +1,16 @@
 use floem::{
+    event::{Event, EventListener},
+    keyboard::{Key, NamedKey},
     peniko::{color::palette, Color},
-    prelude::*,
+    reactive::{create_signal, SignalGet, SignalUpdate},
     style::{
-        Background, BorderBottom, BorderBottomColor, BorderLeft, BorderLeftColor, BorderRight,
-        BorderRightColor, BorderTop, BorderTopColor, Outline, OutlineColor, Style, TextColor,
-        Transition,
+        Background, BorderBottomColor, BorderLeftColor, BorderRightColor, BorderTopColor, Outline,
+        OutlineColor, Style, TextColor, Transition,
     },
     style_class,
     unit::DurationUnitExt,
-    views,
+    views::{label, stack, text, Decorators},
+    IntoView, View,
 };
 
 style_class!(pub Button);
@@ -23,10 +25,10 @@ fn app_view() -> impl IntoView {
         .border_color(Color::from_rgb8(109, 121, 135))
         .hover(|s| s.background(Color::from_rgb8(170, 175, 187)))
         .transition(TextColor, Transition::ease_in_out(60.millis()))
-        .transition(BorderLeft, Transition::ease_in_out(60.millis()))
-        .transition(BorderTop, Transition::ease_in_out(60.millis()))
-        .transition(BorderRight, Transition::ease_in_out(60.millis()))
-        .transition(BorderBottom, Transition::ease_in_out(60.millis()))
+        .transition(BorderLeftColor, Transition::ease_in_out(60.millis()))
+        .transition(BorderTopColor, Transition::ease_in_out(60.millis()))
+        .transition(BorderRightColor, Transition::ease_in_out(60.millis()))
+        .transition(BorderBottomColor, Transition::ease_in_out(60.millis()))
         .transition(Background, Transition::ease_in_out(60.millis()))
         .transition(Outline, Transition::ease_in_out(100.millis()))
         .focus_visible(|s| {
@@ -102,34 +104,48 @@ fn app_view() -> impl IntoView {
         .color(palette::css::BLACK.with_alpha(0.5))
         .font_size(16.0);
 
-    let counter = RwSignal::new(0);
-    let theme = RwSignal::new(false);
-
-    Stack::new((
-        "Toggle Theme".class(Button).action(move || {
-            theme.update(|theme| *theme = !*theme);
-        }),
-        Stack::new((
-            views::Label::derived(move || format!("Value: {}", counter.get())).class(Label),
-            "Increment".class(Button).action(move || {
-                counter.update(|value| *value += 1);
-            }),
-            "Decrement".class(Button).action(move || {
-                counter.update(|value| *value -= 1);
-            }),
-            "Reset to 0"
+    let (counter, set_counter) = create_signal(0);
+    let (theme, set_theme) = create_signal(false);
+    let view = stack((stack((
+        text("Toggle Theme")
+            .class(Button)
+            .on_click_stop({
+                move |_| {
+                    set_theme.update(|theme| *theme = !*theme);
+                }
+            })
+            .keyboard_navigable(),
+        stack((
+            label(move || format!("Value: {}", counter.get())).class(Label),
+            text("Increment")
                 .class(Button)
-                .action(move || {
-                    println!("Reset counter pressed"); // will not fire if button is disabled
-                    counter.update(|value| *value = 0);
+                .on_click_stop({
+                    move |_| {
+                        set_counter.update(|value| *value += 1);
+                    }
                 })
-                .style(move |s| s.set_disabled(counter.get() == 0)),
+                .keyboard_navigable(),
+            text("Decrement")
+                .class(Button)
+                .on_click_stop({
+                    move |_| {
+                        set_counter.update(|value| *value -= 1);
+                    }
+                })
+                .keyboard_navigable(),
+            text("Reset to 0")
+                .class(Button)
+                .on_click_stop(move |_| {
+                    println!("Reset counter pressed"); // will not fire if button is disabled
+                    set_counter.update(|value| *value = 0);
+                })
+                .disabled(move || counter.get() == 0)
+                .keyboard_navigable(),
         ))
         .class(Frame)
         .style(|s| s.items_center()),
     ))
-    .style(|s| s.items_center())
-    .container()
+    .style(|s| s.items_center()),))
     .style(move |_| {
         if theme.get() {
             blue_theme.clone()
@@ -142,10 +158,14 @@ fn app_view() -> impl IntoView {
         .items_center()
         .justify_center()
     })
-    .window_title(|| "Themes Example".to_string())
-    .on_event_stop(listener::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
-        if let Key::Named(NamedKey::F11) = key {
-            floem::action::inspect();
+    .window_title(|| "Themes Example".to_string());
+
+    let id = view.id();
+    view.on_event_stop(EventListener::KeyUp, move |e| {
+        if let Event::KeyUp(e) = e {
+            if e.key.logical_key == Key::Named(NamedKey::F11) {
+                id.inspect();
+            }
         }
     })
 }

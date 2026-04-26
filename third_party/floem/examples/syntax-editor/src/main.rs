@@ -1,29 +1,37 @@
+use floem::peniko::Color;
+use floem::reactive::{RwSignal, SignalGet, SignalUpdate};
+use floem::text::{Attrs, AttrsList, Stretch, Style, Weight};
+use floem::views::button;
+use floem::views::editor::core::buffer::rope_text::RopeText;
+use floem::views::editor::id::EditorId;
+use floem::views::editor::layout::TextLayoutLine;
+use floem::views::editor::text::{default_dark_color, Document, SimpleStylingBuilder, Styling};
+use floem::views::editor::EditorStyle;
 use floem::{
-    action::inspect,
-    prelude::*,
-    text::{Attrs, AttrsList, FamilyOwned, FontWeight, FontWidth},
-    views::editor::{
-        core::{
-            buffer::rope_text::RopeText, cursor::CursorAffinity, editor::EditType,
-            selection::Selection,
+    keyboard::{Key, NamedKey},
+    text::FamilyOwned,
+    views::{
+        editor::{
+            core::{editor::EditType, selection::Selection},
+            text::WrapMethod,
         },
-        id::EditorId,
-        layout::TextLayoutLine,
-        text::{default_dark_color, Document, SimpleStylingBuilder, Styling, WrapMethod},
-        EditorStyle,
+        stack, text_editor, Decorators,
     },
 };
+use floem::{IntoView, View};
+use lazy_static::lazy_static;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::LazyLock;
 use syntect::highlighting::{
     FontStyle, HighlightState, Highlighter, RangedHighlightIterator, ThemeSet,
 };
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 
-pub static SYNTAXSET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-pub static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+lazy_static! {
+    pub static ref SYNTAXSET: SyntaxSet = SyntaxSet::load_defaults_newlines();
+    pub static ref THEMES: ThemeSet = ThemeSet::load_defaults();
+}
 
 struct SyntaxHighlightingStyle<'a> {
     pub syntax: &'a SyntaxReference,
@@ -70,16 +78,16 @@ impl Styling for SyntaxHighlightingStyle<'_> {
         self.style.font_family(edid, line)
     }
 
-    fn weight(&self, edid: EditorId, line: usize) -> FontWeight {
+    fn weight(&self, edid: EditorId, line: usize) -> Weight {
         self.style.weight(edid, line)
     }
 
-    fn italic_style(&self, edid: EditorId, line: usize) -> floem::text::FontStyle {
+    fn italic_style(&self, edid: EditorId, line: usize) -> Style {
         self.style.italic_style(edid, line)
     }
 
-    fn font_width(&self, edid: EditorId, line: usize) -> FontWidth {
-        self.style.font_width(edid, line)
+    fn stretch(&self, edid: EditorId, line: usize) -> Stretch {
+        self.style.stretch(edid, line)
     }
 
     fn indent_line(&self, edid: EditorId, line: usize, line_content: &str) -> usize {
@@ -127,10 +135,10 @@ impl Styling for SyntaxHighlightingStyle<'_> {
                         ) {
                             let mut attr = default.clone();
                             if style.font_style.contains(FontStyle::ITALIC) {
-                                attr = attr.font_style(floem::text::FontStyle::Italic);
+                                attr = attr.style(Style::Italic);
                             }
                             if style.font_style.contains(FontStyle::BOLD) {
-                                attr = attr.weight(FontWeight::BOLD);
+                                attr = attr.weight(Weight::BOLD);
                             }
                             attr = attr.color(Color::from_rgba8(
                                 style.foreground.r,
@@ -216,28 +224,30 @@ mod tests {
 
     let doc = editor.doc();
 
-    Stack::new((
+    let view = stack((
         editor,
-        Stack::new((
-            Button::new("Clear").action(move || {
+        stack((
+            button("Clear").action(move || {
                 doc.edit_single(
-                    Selection::region(0, doc.text().len(), CursorAffinity::Backward),
+                    Selection::region(0, doc.text().len()),
                     "",
                     EditType::DeleteSelection,
                 );
             }),
-            Button::new("Gutter").action(move || {
+            button("Gutter").action(move || {
                 hide_gutter.update(|hide| *hide = !*hide);
             }),
         ))
         .style(|s| s.width_full().flex_row().items_center().justify_center()),
     ))
-    .style(|s| s.size_full().flex_col().items_center().justify_center())
-    .on_event_stop(el::KeyUp, |_, KeyboardEvent { key, .. }| {
-        if *key == Key::Named(NamedKey::F11) {
-            inspect();
-        }
-    })
+    .style(|s| s.size_full().flex_col().items_center().justify_center());
+
+    let id = view.id();
+    view.on_key_up(
+        Key::Named(NamedKey::F11),
+        |m| m.is_empty(),
+        move |_| id.inspect(),
+    )
 }
 
 fn main() {

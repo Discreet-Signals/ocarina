@@ -1,7 +1,7 @@
 [package]
 name = "floem_renderer"
 version.workspace = true
-edition.workspace = true
+edition = "2021"
 repository = "https://github.com/lapce/floem"
 description = "A native Rust UI library with fine-grained reactivity"
 license.workspace = true
@@ -10,15 +10,17 @@ license.workspace = true
 parking_lot = { workspace = true }
 peniko = { workspace = true }
 resvg = { workspace = true }
-parley = { workspace = true }
-fontique = { workspace = true }
+swash = { workspace = true }
+
+cosmic-text = { version = "0.14.2", features = ["shape-run-cache"] }
+
 winit = { workspace = true }
 wgpu = { workspace = true }
 crossbeam = { version = "0.8", optional = true }
-futures = "0.3.32"
+futures = "0.3.31"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { version = "0.4" }
 
 [features]
-crossbeam = ["dep:crossbeam"]
+crossbeam = [ "dep:crossbeam" ]

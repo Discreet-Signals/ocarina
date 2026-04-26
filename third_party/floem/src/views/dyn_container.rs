@@ -1,13 +1,12 @@
 use std::any::Any;
 
-use floem_reactive::{Scope, UpdaterEffect};
+use floem_reactive::{as_child_of_current_scope, create_updater, Scope};
 
 use crate::{
-    IntoView, ViewId,
     animate::RepeatMode,
     context::UpdateCx,
-    style::recalc::StyleReason,
     view::{AnyView, View},
+    IntoView, ViewId,
 };
 
 #[macro_export]
@@ -96,11 +95,11 @@ pub fn dyn_container<CF: Fn(T) -> IV + 'static, T: 'static, IV: IntoView>(
 ) -> DynamicContainer<T> {
     let id = ViewId::new();
 
-    let initial = UpdaterEffect::new(update_view, move |new_state| {
+    let initial = create_updater(update_view, move |new_state| {
         id.update_state(DynMessage::Val(Box::new(new_state)));
     });
 
-    let child_fn = Box::new(Scope::current().enter_child(move |e| child_fn(e).into_any()));
+    let child_fn = Box::new(as_child_of_current_scope(move |e| child_fn(e).into_any()));
     let (child, child_scope) = child_fn(initial);
     let child_id = child.id();
     id.set_children([child]);
@@ -185,7 +184,7 @@ impl<T> DynamicContainer<T> {
         self.child_id = new_child.id();
         self.id.set_children([new_child]);
         self.child_scope = new_child_scope;
-        cx.window_state.remove_view(old_child_id);
+        cx.app_state_mut().remove_view(old_child_id);
         old_child_scope.dispose();
         animations_recursive_on_create(self.child_id);
         self.id.request_all();
@@ -214,7 +213,7 @@ fn animations_recursive_on_remove(id: ViewId, child_id: ViewId, child_scope: Sco
     }
     drop(state);
     if request_style {
-        child_id.request_style(StyleReason::animation());
+        child_id.request_style();
     }
 
     child_id
@@ -237,7 +236,7 @@ fn animations_recursive_on_create(child_id: ViewId) {
     }
     drop(state);
     if request_style {
-        child_id.request_style(StyleReason::animation());
+        child_id.request_style();
     }
 
     child_id

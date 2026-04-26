@@ -234,7 +234,6 @@ fn run_render_pass(
                     };
                     Some(wgpu::RenderPassColorAttachment {
                         view: &view.view,
-                        depth_slice: None,
                         resolve_target,
                         ops: wgpu::Operations {
                             load: cv::color_load_op(att.load),

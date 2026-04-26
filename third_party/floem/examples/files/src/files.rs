@@ -1,16 +1,16 @@
 use floem::{
     action::{open_file, save_as},
     file::{FileDialogOptions, FileInfo, FileSpec},
-    reactive::{RwSignal, SignalGet, SignalUpdate},
-    text::FontWeight,
-    views::{Button, Decorators, Label, Stack},
+    reactive::{create_rw_signal, SignalGet, SignalUpdate},
+    text::Weight,
+    views::{button, h_stack, label, v_stack, Decorators},
     IntoView,
 };
 
 pub fn files_view() -> impl IntoView {
-    let files = RwSignal::new(String::new());
-    let view = Stack::horizontal((
-        Button::new("Select file").action(move || {
+    let files = create_rw_signal("".to_string());
+    let view = h_stack((
+        button("Select file").on_click_cont(move |_| {
             open_file(
                 FileDialogOptions::new()
                     .force_starting_directory("/")
@@ -27,7 +27,7 @@ pub fn files_view() -> impl IntoView {
                 },
             );
         }),
-        Button::new("Select multiple files").action(move || {
+        button("Select multiple files").on_click_cont(move |_| {
             open_file(
                 FileDialogOptions::new()
                     .multi_selection()
@@ -44,7 +44,7 @@ pub fn files_view() -> impl IntoView {
                 },
             );
         }),
-        Button::new("Select folder").action(move || {
+        button("Select folder").on_click_cont(move |_| {
             open_file(
                 FileDialogOptions::new()
                     .select_directories()
@@ -57,7 +57,7 @@ pub fn files_view() -> impl IntoView {
                 },
             );
         }),
-        Button::new("Select multiple folder").action(move || {
+        button("Select multiple folder").on_click_cont(move |_| {
             open_file(
                 FileDialogOptions::new()
                     .select_directories()
@@ -71,7 +71,7 @@ pub fn files_view() -> impl IntoView {
                 },
             );
         }),
-        Button::new("Save file").action(move || {
+        button("Save file").on_click_cont(move |_| {
             save_as(
                 FileDialogOptions::new()
                     .default_name("floem.file")
@@ -85,18 +85,17 @@ pub fn files_view() -> impl IntoView {
             );
         }),
     ))
-    .style(|s| s.justify_center().gap(10));
+    .style(|s| s.justify_center());
 
-    Stack::vertical((
+    v_stack((
         view,
-        Stack::horizontal((
-            "Path(s): ".style(|s| s.font_weight(FontWeight::BOLD)),
-            Label::derived(move || files.get()),
+        h_stack((
+            "Path(s): ".style(|s| s.font_weight(Weight::BOLD)),
+            label(move || files.get()),
         )),
     ))
     .style(|s| {
-        s.row_gap(5)
-            .padding(10)
+        s.col_gap(5)
             .width_full()
             .height_full()
             .items_center()

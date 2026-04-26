@@ -1,40 +1,36 @@
-use std::{any::Any, cell::RefCell, fmt::Display, rc::Rc};
+use std::{any::Any, fmt::Display, mem::swap};
 
 use crate::{
-    Clipboard, ViewId,
-    context::{EventCx, LayoutChangedListener, PaintCx, UpdateCx},
-    event::{Event, EventPropagation, FocusEvent, Phase, listener},
-    prelude::EventListenerTrait,
+    context::{PaintCx, UpdateCx},
+    event::{Event, EventListener, EventPropagation},
+    id::ViewId,
+    keyboard::KeyEvent,
     prop_extractor,
     style::{
-        ContextValue, CustomStylable, CustomStyle, ExprStyle, FontProps, LineHeight, Selectable,
+        CursorColor, CustomStylable, CustomStyle, FontProps, LineHeight, Selectable,
         SelectionCornerRadius, SelectionStyle, Style, TextAlignProp, TextColor, TextOverflow,
         TextOverflowProp,
     },
     style_class,
-    text::{
-        Attrs, AttrsList, Cursor, FamilyOwned, TextLayout, TextLayoutState, TextSelection,
-        WordBreakStrength,
-    },
-    view::{LayoutNodeCx, View},
-    views::editor::SelectionColor,
+    text::{Attrs, AttrsList, FamilyOwned, TextLayout},
+    unit::PxPct,
+    view::View,
+    Clipboard,
 };
-use floem_reactive::UpdaterEffect;
-use floem_renderer::Renderer;
+use floem_reactive::create_updater;
+use floem_renderer::{text::Cursor, Renderer};
 use peniko::{
+    color::palette,
+    kurbo::{Point, Rect},
     Brush,
-    color::palette::{self},
-    kurbo::Point,
 };
-use ui_events::{
-    keyboard::{Key, KeyState, KeyboardEvent},
-    pointer::{PointerButtonEvent, PointerEvent},
-};
+use taffy::tree::NodeId;
+use winit::keyboard::{Key, SmolStr};
 
 use super::{Decorators, TextCommand};
 
 prop_extractor! {
-    LabelProps {
+    Extractor {
         color: TextColor,
         text_overflow: TextOverflowProp,
         line_height: LineHeight,
@@ -43,133 +39,62 @@ prop_extractor! {
     }
 }
 
-style_class!(
-    /// The style class that is applied to labels.
-    pub LabelClass
-);
+style_class!(pub LabelClass);
 
-/// Event fired when a text view's overflow state changes.
-///
-/// This is fired when text transitions between fitting within its bounds and overflowing,
-/// or vice versa. The overflow state depends on the `text_overflow` style property:
-///
-/// - `TextOverflow::NoWrap(NoWrapOverflow::Clip)`: Text is clipped at the boundary
-/// - `TextOverflow::NoWrap(NoWrapOverflow::Ellipsis)`: Text is truncated with "..." when it overflows
-/// - `TextOverflow::Wrap { .. }`: Text wraps to multiple lines (changes line count, not overflow state)
-///
-/// # Use Cases
-///
-/// - Show/hide a "more" button when text is truncated
-/// - Toggle between single-line and multi-line display modes
-/// - Display tooltips with full text when content is clipped
-/// - Update UI indicators when text fits or overflows
-///
-/// # Example
-///
-/// ```rust
-/// # use floem::event::EventPropagation;
-/// # use floem::prelude::*;
-/// # use floem::style::{NoWrapOverflow, TextOverflow};
-/// # use floem::text::TextOverflowChanged;
-/// Label::derived(|| "Some long text that might overflow")
-///     .style(|s| s.text_overflow(TextOverflow::NoWrap(NoWrapOverflow::Ellipsis)))
-///     .on_event(TextOverflowChanged::listener(), |_cx, event| {
-///         if event.is_overflowing {
-///             println!("Text is now overflowing and truncated");
-///         } else {
-///             println!("Text fits completely");
-///         }
-///         EventPropagation::Continue
-///     });
-/// ```
-#[derive(Debug, Clone, PartialEq)]
+struct TextOverflowListener {
+    last_is_overflown: Option<bool>,
+    on_change_fn: Box<dyn Fn(bool) + 'static>,
+}
+
+#[derive(Debug, Clone)]
 enum SelectionState {
     None,
-    Ready {
-        origin: Point,
-        selection: TextSelection,
-    },
-    Selecting(TextSelection),
-    Selected(TextSelection),
+    Ready(Point),
+    Selecting(Point, Point),
+    Selected(Point, Point),
 }
 
 /// A View that can display text from a [`String`]. See [`label`], [`text`], and [`static_label`].
 pub struct Label {
     id: ViewId,
     label: String,
-    /// Layout data containing text layouts and overflow handling logic
-    layout_data: Rc<RefCell<TextLayoutState>>,
+    text_layout: Option<TextLayout>,
+    text_node: Option<NodeId>,
+    available_text: Option<String>,
+    available_width: Option<f32>,
+    available_text_layout: Option<TextLayout>,
+    text_overflow_listener: Option<TextOverflowListener>,
     selection_state: SelectionState,
+    selection_range: Option<(Cursor, Cursor)>,
     selection_style: SelectionStyle,
-    font_props: FontProps,
-    label_props: LabelProps,
-    text_node: Option<taffy::NodeId>,
-    layout_node: Option<taffy::NodeId>,
+    font: FontProps,
+    style: Extractor,
 }
 
 impl Label {
-    fn new_internal(id: ViewId, label: String) -> Self {
-        id.register_listener(LayoutChangedListener::listener_key());
-        let layout_data = Rc::new(RefCell::new(TextLayoutState::new(Some(id))));
-        let mut label = Label {
+    fn new(id: ViewId, label: String) -> Self {
+        Label {
             id,
             label,
-            layout_data,
+            text_layout: None,
             text_node: None,
-            layout_node: None,
+            available_text: None,
+            available_width: None,
+            available_text_layout: None,
+            text_overflow_listener: None,
             selection_state: SelectionState::None,
+            selection_range: None,
             selection_style: Default::default(),
-            font_props: FontProps::default(),
-            label_props: Default::default(),
-        };
-        label.set_text_layout();
-        label.set_taffy_layout();
-        label.class(LabelClass)
+            font: FontProps::default(),
+            style: Default::default(),
+        }
+        .class(LabelClass)
     }
 
-    /// Creates a new non-reactive label from any type that implements [`Display`].
-    ///
-    /// ## Example
-    /// ```rust
-    /// use floem::views::*;
-    ///
-    /// Label::new("Hello, world!");
-    /// Label::new(42);
-    /// ```
-    pub fn new<S: Display>(label: S) -> Self {
-        Self::new_internal(ViewId::new(), label.to_string())
-    }
-
-    /// Creates a new non-reactive label with a pre-existing [`ViewId`].
-    ///
-    /// This is useful for lazy view construction where the `ViewId` is created
-    /// before the view itself.
-    pub fn with_id<S: Display>(id: ViewId, label: S) -> Self {
-        Self::new_internal(id, label.to_string())
-    }
-
-    /// Creates a derived label that automatically updates when its dependencies change.
-    ///
-    /// ## Example
-    /// ```rust
-    /// use floem::{reactive::*, views::*};
-    ///
-    /// let count = RwSignal::new(0);
-    /// Label::derived(move || format!("Count: {}", count.get()));
-    /// ```
-    pub fn derived<S: Display + 'static>(label: impl Fn() -> S + 'static) -> Self {
-        let id = ViewId::new();
-        let initial_label = UpdaterEffect::new(
-            move || label().to_string(),
-            move |new_label| id.update_state(new_label),
-        );
-        Self::new_internal(id, initial_label).on_event_cont(listener::FocusLost, move |_, _| {
-            id.request_layout();
-        })
-    }
-
-    fn with_effective_text_layout<O>(&self, with: impl FnOnce(&TextLayout) -> O) -> O {
-        self.layout_data.borrow().with_effective_text_layout(with)
+    fn effectve_text_layout(&self) -> &TextLayout {
+        self.available_text_layout
+            .as_ref()
+            .unwrap_or_else(|| self.text_layout.as_ref().unwrap())
     }
 }
 
@@ -184,15 +109,13 @@ impl Label {
 ///    text(505),
 /// ));
 /// ```
-#[deprecated(since = "0.2.0", note = "Use Label::new() instead")]
 pub fn text<S: Display>(text: S) -> Label {
-    Label::new(text)
+    static_label(text.to_string())
 }
 
 /// A non-reactive view that can display text from an item that can be turned into a [`String`]. See also [`label`].
-#[deprecated(since = "0.2.0", note = "Use Label::new() instead")]
 pub fn static_label(label: impl Into<String>) -> Label {
-    Label::new(label.into())
+    Label::new(ViewId::new(), label.into())
 }
 
 /// A view that can reactively display text from an item that implements [`Display`]. See also [`text`] for a non-reactive label.
@@ -205,123 +128,118 @@ pub fn static_label(label: impl Into<String>) -> Label {
 ///
 /// label(move || text.get());
 /// ```
-#[deprecated(since = "0.2.0", note = "Use Label::derived() instead")]
 pub fn label<S: Display + 'static>(label: impl Fn() -> S + 'static) -> Label {
-    Label::derived(label)
+    let id = ViewId::new();
+    let initial_label = create_updater(
+        move || label().to_string(),
+        move |new_label| id.update_state(new_label),
+    );
+    Label::new(id, initial_label).on_event_cont(EventListener::FocusLost, move |_| {
+        id.request_layout();
+    })
 }
 
 impl Label {
-    fn mark_text_measure_dirty(&self) {
-        if let Some(text_node) = self.text_node {
-            let _ = self.id.taffy().borrow_mut().mark_dirty(text_node);
-        }
-        let _ = self.id.mark_view_layout_dirty();
+    pub fn on_text_overflow(mut self, is_text_overflown_fn: impl Fn(bool) + 'static) -> Self {
+        self.text_overflow_listener = Some(TextOverflowListener {
+            on_change_fn: Box::new(is_text_overflown_fn),
+            last_is_overflown: None,
+        });
+        self
     }
 
     fn get_attrs_list(&self) -> AttrsList {
-        let mut attrs = Attrs::new().color(self.label_props.color().unwrap_or(palette::css::BLACK));
-        let font_size = self.font_props.size();
-        attrs = attrs.font_size(font_size as f32);
-
-        if let Some(font_style) = self.font_props.style() {
-            attrs = attrs.font_style(font_style);
+        let mut attrs = Attrs::new().color(self.style.color().unwrap_or(palette::css::BLACK));
+        if let Some(font_size) = self.font.size() {
+            attrs = attrs.font_size(font_size);
         }
-        let font_family = self.font_props.family().as_ref().map(|font_family| {
+        if let Some(font_style) = self.font.style() {
+            attrs = attrs.style(font_style);
+        }
+        let font_family = self.font.family().as_ref().map(|font_family| {
             let family: Vec<FamilyOwned> = FamilyOwned::parse_list(font_family).collect();
             family
         });
         if let Some(font_family) = font_family.as_ref() {
             attrs = attrs.family(font_family);
         }
-        if let Some(font_weight) = self.font_props.weight() {
+        if let Some(font_weight) = self.font.weight() {
             attrs = attrs.weight(font_weight);
         }
-        attrs = attrs.line_height(self.label_props.line_height());
-        if let TextOverflow::Wrap { word_break, .. } = self.label_props.text_overflow()
-            && word_break != WordBreakStrength::Normal
-        {
-            attrs = attrs.word_break(word_break);
+        if let Some(line_height) = self.style.line_height() {
+            attrs = attrs.line_height(line_height);
         }
         AttrsList::new(attrs)
     }
 
     fn set_text_layout(&mut self) {
+        let mut text_layout = TextLayout::new();
         let attrs_list = self.get_attrs_list();
-        let align = self.label_props.text_align();
-        let text_overflow = self.label_props.text_overflow();
+        let align = self.style.text_align();
+        text_layout.set_text(self.label.as_str(), attrs_list.clone(), align);
+        self.text_layout = Some(text_layout);
 
-        let mut layout_data = self.layout_data.borrow_mut();
-        layout_data.set_text(&self.label, attrs_list, align);
-        layout_data.set_text_overflow(text_overflow);
-
-        self.mark_text_measure_dirty();
+        if let Some(new_text) = self.available_text.as_ref() {
+            let mut text_layout = TextLayout::new();
+            text_layout.set_text(new_text, attrs_list, align);
+            self.available_text_layout = Some(text_layout);
+        }
     }
 
     fn get_hit_point(&self, point: Point) -> Option<Cursor> {
-        let (Some(parent_node), Some(text_node)) = (self.layout_node, self.text_node) else {
-            return None;
-        };
-
-        let text_loc = self.get_text_origin(parent_node, text_node);
-        self.with_effective_text_layout(|l| l.hit_test(point - text_loc.to_vec2()))
-    }
-
-    fn get_text_origin(&self, parent_node: taffy::NodeId, text_node: taffy::NodeId) -> Point {
-        let content_rect = self
+        let text_node = self.text_node?;
+        let location = self
             .id
-            .get_content_rect_relative(text_node, parent_node)
-            .unwrap_or_default();
-        self.layout_data.borrow().centered_text_origin(content_rect)
+            .taffy()
+            .borrow()
+            .layout(text_node)
+            .map_or(taffy::Layout::new().location, |layout| layout.location);
+        self.effectve_text_layout().hit(
+            point.x as f32 - location.x,
+            // TODO: prevent cursor incorrectly going to end of buffer when clicking
+            // slightly below the text
+            point.y as f32 - location.y,
+        )
     }
 
-    fn update_drag_selection(&mut self, focus_point: Point) {
-        let Some(focus) = self.get_hit_point(focus_point) else {
-            return;
-        };
-
+    fn set_selection_range(&mut self) {
         match self.selection_state {
-            SelectionState::Ready { selection, .. } => {
-                let next_selection = self
-                    .layout_data
-                    .borrow()
-                    .get_effective_text_layout()
-                    .map(|layout| layout.begin_selection(selection.anchor(), focus))
-                    .expect("label text layout should be available while selecting");
-                self.selection_state = SelectionState::Selecting(next_selection);
+            SelectionState::None => {
+                self.selection_range = None;
             }
-            SelectionState::Selecting(selection) | SelectionState::Selected(selection) => {
-                let selection = self
-                    .layout_data
-                    .borrow()
-                    .get_effective_text_layout()
-                    .map(|layout| layout.selection(selection.anchor(), focus))
-                    .expect("label text layout should be available while selecting");
-                self.selection_state = SelectionState::Selecting(selection);
+            SelectionState::Selecting(start, end) | SelectionState::Selected(start, end) => {
+                let mut start_cursor = self.get_hit_point(start).expect("Start position is valid");
+                if let Some(mut end_cursor) = self.get_hit_point(end) {
+                    if start_cursor.line > end_cursor.line
+                        || (start_cursor.line == end_cursor.line
+                            && start_cursor.index > end_cursor.index)
+                    {
+                        swap(&mut start_cursor, &mut end_cursor);
+                    }
+
+                    self.selection_range = Some((start_cursor, end_cursor));
+                }
             }
-            SelectionState::None => {}
+            _ => {}
         }
     }
 
-    fn selection(&self) -> Option<TextSelection> {
-        match self.selection_state {
-            SelectionState::Selecting(selection) | SelectionState::Selected(selection)
-                if !selection.is_collapsed() =>
-            {
-                Some(selection)
-            }
-            SelectionState::Ready { .. } | SelectionState::None => None,
-            SelectionState::Selecting(_) | SelectionState::Selected(_) => None,
+    fn handle_modifier_cmd(&mut self, event: &KeyEvent, character: &SmolStr) -> bool {
+        if event.modifiers.is_empty() {
+            return false;
         }
-    }
 
-    fn handle_modifier_cmd(&mut self, command: &TextCommand) -> bool {
+        let command = (event, character).into();
+
         match command {
             TextCommand::Copy => {
-                if let Some(selection) = self.selection() {
-                    let layout_data = self.layout_data.borrow();
-                    if let Some(text_layout) = layout_data.get_effective_text_layout() {
-                        let range = text_layout.selection_text_range(&selection);
-                        let selection_txt = self.label[range].into();
+                if let Some((start_c, end_c)) = &self.selection_range {
+                    if let Some(ref text_layout) = self.text_layout {
+                        let start_line_idx = text_layout.lines_range()[start_c.line].start;
+                        let end_line_idx = text_layout.lines_range()[end_c.line].start;
+                        let start_idx = start_line_idx + start_c.index;
+                        let end_idx = end_line_idx + end_c.index;
+                        let selection_txt = self.label[start_idx..end_idx].into();
                         let _ = Clipboard::set_contents(selection_txt);
                     }
                 }
@@ -330,53 +248,45 @@ impl Label {
             _ => false,
         }
     }
-    fn handle_key_down(&mut self, event: &KeyboardEvent) -> bool {
-        if event.modifiers.is_empty() {
-            return false;
+    fn handle_key_down(&mut self, event: &KeyEvent) -> bool {
+        match event.key.logical_key {
+            Key::Character(ref ch) => self.handle_modifier_cmd(event, ch),
+            _ => false,
         }
-        if !matches!(event.key, Key::Character(_)) {
-            return false;
-        }
-
-        self.handle_modifier_cmd(&event.into())
     }
 
-    fn paint_selection(&self, text_loc: Point, paint_cx: &mut PaintCx) {
-        if let Some(selection) = self.selection() {
-            let selection_color = self.selection_style.selection_color();
-            self.layout_data
+    fn paint_selection(&self, text_layout: &TextLayout, paint_cx: &mut PaintCx) {
+        if let Some((start_c, end_c)) = &self.selection_range {
+            let location = self
+                .id
+                .taffy()
                 .borrow()
-                .selection_rects_for_selection(&selection, text_loc, |rect| {
+                .layout(self.text_node.unwrap())
+                .cloned()
+                .unwrap_or_default()
+                .location;
+            let ss = &self.selection_style;
+            let selection_color = ss.selection_color();
+
+            for run in text_layout.layout_runs() {
+                if let Some((mut start_x, width)) = run.highlight(*start_c, *end_c) {
+                    start_x += location.x;
+                    let end_x = width + start_x;
+                    let start_y = location.y as f64 + run.line_top as f64;
+                    let end_y = start_y + run.line_height as f64;
+                    let rect = Rect::new(start_x.into(), start_y, end_x.into(), end_y)
+                        .to_rounded_rect(ss.corner_radius());
                     paint_cx.fill(&rect, &selection_color, 0.0);
-                });
+                }
+            }
         }
     }
 
-    fn set_taffy_layout(&mut self) {
-        let taffy_node = self.id.taffy_node();
-        let taffy = self.id.taffy();
-        let mut taffy = taffy.borrow_mut();
-        let text_node = taffy
-            .new_leaf(taffy::Style {
-                ..taffy::Style::DEFAULT
-            })
-            .unwrap();
-
-        let layout_fn = TextLayoutState::create_taffy_layout_fn(self.layout_data.clone());
-        let finalize_fn = TextLayoutState::create_finalize_fn(self.layout_data.clone());
-        self.text_node = Some(text_node);
-        self.layout_node = Some(taffy_node);
-
-        taffy
-            .set_node_context(
-                text_node,
-                Some(LayoutNodeCx::Custom {
-                    measure: layout_fn,
-                    finalize: Some(finalize_fn),
-                }),
-            )
-            .unwrap();
-        taffy.set_children(taffy_node, &[text_node]).unwrap();
+    pub fn label_style(
+        self,
+        style: impl Fn(LabelCustomStyle) -> LabelCustomStyle + 'static,
+    ) -> Self {
+        self.custom_style(style)
     }
 }
 
@@ -385,93 +295,66 @@ impl View for Label {
         self.id
     }
 
-    fn view_style(&self) -> Option<Style> {
-        None
-    }
-
     fn debug_name(&self) -> std::borrow::Cow<'static, str> {
         format!("Label: {:?}", self.label).into()
     }
 
-    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
-        if let Some(layout) = LayoutChangedListener::extract(&cx.event) {
-            self.layout_data
-                .borrow_mut()
-                .finalize_for_width(layout.new_content_box.width() as f32);
+    fn update(&mut self, _cx: &mut UpdateCx, state: Box<dyn Any>) {
+        if let Ok(state) = state.downcast() {
+            self.label = *state;
+            self.text_layout = None;
+            self.available_text = None;
+            self.available_width = None;
+            self.available_text_layout = None;
+            self.id.request_layout();
         }
-        match &cx.event {
-            Event::Focus(FocusEvent::Lost) => {
-                self.selection_state = SelectionState::None;
-                cx.window_state.request_paint(self.id);
-                return EventPropagation::Continue;
-            }
-            Event::Pointer(PointerEvent::Down(PointerButtonEvent { state, pointer, .. })) => {
-                if self.label_props.text_selectable()
-                    && state
-                        .buttons
-                        .contains(ui_events::pointer::PointerButton::Primary)
-                {
-                    self.selection_state = self
-                        .get_hit_point(state.logical_point())
-                        .map(|cursor| SelectionState::Ready {
-                            origin: state.logical_point(),
-                            selection: self
-                                .layout_data
-                                .borrow()
-                                .get_effective_text_layout()
-                                .map(|layout| layout.collapsed_selection(cursor))
-                                .expect("label text layout should be available on pointer down"),
-                        })
-                        .unwrap_or(SelectionState::None);
-                    if let Some(pointer_id) = pointer.pointer_id {
-                        cx.window_state.set_pointer_capture(pointer_id, self.id);
-                    }
-                    cx.window_state.request_paint(self.id);
+    }
+
+    fn event_before_children(
+        &mut self,
+        _cx: &mut crate::context::EventCx,
+        event: &Event,
+    ) -> crate::event::EventPropagation {
+        match event {
+            Event::PointerDown(pe) => {
+                if self.style.text_selectable() {
+                    self.selection_range = None;
+                    self.selection_state = SelectionState::Ready(pe.pos);
+                    self.id.request_layout();
                 }
             }
-            Event::Pointer(PointerEvent::Move(pu)) => {
-                if !self.label_props.text_selectable() {
-                    if self.selection_state != SelectionState::None {
+            Event::PointerMove(pme) => {
+                if !self.style.text_selectable() {
+                    if self.selection_range.is_some() {
                         self.selection_state = SelectionState::None;
-                        cx.window_state.request_paint(self.id);
+                        self.selection_range = None;
+                        self.id.request_layout();
                     }
                 } else {
-                    match self.selection_state {
-                        SelectionState::Ready { origin, .. } => {
-                            // This check prevents text selection from eating tiny pointer moves.
-                            if origin.distance(pu.current.logical_point()).abs() > 2. {
-                                self.update_drag_selection(pu.current.logical_point());
-                                cx.window_state.request_paint(self.id);
-                                self.id.request_focus();
-                            }
-                        }
-                        SelectionState::Selecting(_) => {
-                            self.update_drag_selection(pu.current.logical_point());
-                            cx.window_state.request_paint(self.id);
-                        }
-                        SelectionState::Selected(_) => return EventPropagation::Continue,
-                        SelectionState::None => return EventPropagation::Continue,
+                    let (SelectionState::Selecting(start, _) | SelectionState::Ready(start)) =
+                        self.selection_state
+                    else {
+                        return EventPropagation::Continue;
+                    };
+                    // this check is here to make it so that text selection doesn't eat pointer events on very small move events
+                    if start.distance(pme.pos).abs() > 2. {
+                        self.selection_state = SelectionState::Selecting(start, pme.pos);
+                        self.id.request_active();
+                        self.id.request_focus();
+                        self.id.request_layout();
                     }
                 }
             }
-            Event::Pointer(PointerEvent::Up { .. }) => {
-                self.selection_state = match self.selection_state {
-                    SelectionState::Selecting(selection) if !selection.is_collapsed() => {
-                        SelectionState::Selected(selection)
-                    }
-                    _ => SelectionState::None,
-                };
-                cx.window_state.request_paint(self.id);
-            }
-            Event::Key(
-                ke @ KeyboardEvent {
-                    state: KeyState::Down,
-                    ..
-                },
-            ) => {
-                if cx.phase != Phase::Target || !cx.window_state.is_focused(self.id) {
-                    return EventPropagation::Continue;
+            Event::PointerUp(_) => {
+                if let SelectionState::Selecting(start, end) = self.selection_state {
+                    self.selection_state = SelectionState::Selected(start, end);
+                } else {
+                    self.selection_state = SelectionState::None;
                 }
+                self.id.clear_active();
+                self.id.request_layout();
+            }
+            Event::KeyDown(ke) => {
                 if self.handle_key_down(ke) {
                     return EventPropagation::Stop;
                 }
@@ -482,26 +365,138 @@ impl View for Label {
     }
 
     fn style_pass(&mut self, cx: &mut crate::context::StyleCx<'_>) {
-        if self.font_props.read(cx) | self.label_props.read(cx) {
-            self.layout_data.borrow_mut().clear_overflow_state();
-            self.set_text_layout();
+        if self.font.read(cx) | self.style.read(cx) {
+            self.text_layout = None;
+            self.available_text = None;
+            self.available_width = None;
+            self.available_text_layout = None;
             self.id.request_layout();
-            self.id.request_paint();
         }
         if self.selection_style.read(cx) {
-            cx.window_state.request_paint(self.id);
+            self.id.request_paint();
         }
     }
 
-    fn update(&mut self, cx: &mut UpdateCx, state: Box<dyn Any>) {
-        if state.is::<String>()
-            && let Ok(state) = state.downcast::<String>()
-        {
-            self.label = *state;
-            self.layout_data.borrow_mut().clear_overflow_state();
-            self.set_text_layout();
-            cx.window_state.schedule_layout();
+    fn layout(&mut self, cx: &mut crate::context::LayoutCx) -> taffy::tree::NodeId {
+        cx.layout_node(self.id(), true, |_cx| {
+            let (width, height) = if self.label.is_empty() {
+                (0.0, self.font.size().unwrap_or(14.0))
+            } else {
+                if self.text_layout.is_none() {
+                    self.set_text_layout();
+                }
+                let text_layout = self.text_layout.as_ref().unwrap();
+                let size = text_layout.size();
+                let width = size.width.ceil() as f32;
+                let mut height = size.height as f32;
+
+                if self.style.text_overflow() == TextOverflow::Wrap {
+                    if let Some(t) = self.available_text_layout.as_ref() {
+                        height = height.max(t.size().height as f32);
+                    }
+                }
+
+                (width, height)
+            };
+
+            if self.text_node.is_none() {
+                self.text_node = Some(
+                    self.id
+                        .taffy()
+                        .borrow_mut()
+                        .new_leaf(taffy::style::Style::DEFAULT)
+                        .unwrap(),
+                );
+            }
+            let text_node = self.text_node.unwrap();
+
+            let style = Style::new().width(width).height(height).to_taffy_style();
+            let _ = self.id.taffy().borrow_mut().set_style(text_node, style);
+
+            vec![text_node]
+        })
+    }
+
+    fn compute_layout(&mut self, _cx: &mut crate::context::ComputeLayoutCx) -> Option<Rect> {
+        if self.label.is_empty() {
+            return None;
         }
+
+        let layout = self.id.get_layout().unwrap_or_default();
+        let (text_overflow, padding) = {
+            let view_state = self.id.state();
+            let view_state = view_state.borrow();
+            let style = view_state.combined_style.builtin();
+            let padding_left = match style.padding_left() {
+                PxPct::Px(padding) => padding as f32,
+                PxPct::Pct(pct) => (pct / 100.) as f32 * layout.size.width,
+            };
+            let padding_right = match style.padding_right() {
+                PxPct::Px(padding) => padding as f32,
+                PxPct::Pct(pct) => (pct / 100.) as f32 * layout.size.width,
+            };
+            let text_overflow = style.text_overflow();
+            (text_overflow, padding_left + padding_right)
+        };
+        let text_layout = self.text_layout.as_ref().unwrap();
+        let width = text_layout.size().width as f32;
+        let available_width = layout.size.width - padding;
+        if text_overflow == TextOverflow::Ellipsis {
+            if width > available_width {
+                if self.available_width != Some(available_width) {
+                    let mut dots_text = TextLayout::new();
+                    dots_text.set_text("...", self.get_attrs_list(), self.style.text_align());
+
+                    let dots_width = dots_text.size().width as f32;
+                    let width_left = available_width - dots_width;
+                    let hit_point = text_layout.hit_point(Point::new(width_left as f64, 0.0));
+                    let index = hit_point.index;
+
+                    let new_text = if index > 0 {
+                        format!("{}...", &self.label[..index])
+                    } else {
+                        "".to_string()
+                    };
+                    self.available_text = Some(new_text);
+                    self.available_width = Some(available_width);
+                    self.set_text_layout();
+                }
+            } else {
+                self.available_text = None;
+                self.available_width = None;
+                self.available_text_layout = None;
+            }
+        } else if text_overflow == TextOverflow::Wrap {
+            if width > available_width {
+                if self.available_width != Some(available_width) {
+                    let mut text_layout = text_layout.clone();
+                    text_layout.set_size(available_width, f32::MAX);
+                    self.available_text_layout = Some(text_layout);
+                    self.available_width = Some(available_width);
+                    self.id.request_layout();
+                }
+            } else {
+                if self.available_text_layout.is_some() {
+                    self.id.request_layout();
+                }
+                self.available_text = None;
+                self.available_width = None;
+                self.available_text_layout = None;
+            }
+        }
+
+        self.set_selection_range();
+
+        if let Some(listener) = self.text_overflow_listener.as_mut() {
+            let was_overflown = listener.last_is_overflown;
+            let now_overflown = width > available_width;
+
+            if was_overflown != Some(now_overflown) {
+                (listener.on_change_fn)(now_overflown);
+                listener.last_is_overflown = Some(now_overflown);
+            }
+        }
+        None
     }
 
     fn paint(&mut self, cx: &mut crate::context::PaintCx) {
@@ -509,18 +504,21 @@ impl View for Label {
             return;
         }
 
-        let (Some(this_node), Some(text_node)) = (self.layout_node, self.text_node) else {
-            return;
-        };
+        let text_node = self.text_node.unwrap();
+        let location = self
+            .id
+            .taffy()
+            .borrow()
+            .layout(text_node)
+            .map_or(taffy::Layout::new().location, |layout| layout.location);
 
-        let text_loc = self.get_text_origin(this_node, text_node);
+        let point = Point::new(location.x as f64, location.y as f64);
 
-        self.with_effective_text_layout(|l| {
-            l.draw(cx, text_loc);
-            if cx.window_state.is_focused(self.id) {
-                self.paint_selection(text_loc, cx);
-            }
-        });
+        let text_layout = self.effectve_text_layout();
+        cx.draw_text(text_layout, point);
+        if cx.app_state.is_focused(&self.id()) {
+            self.paint_selection(text_layout, cx);
+        }
     }
 }
 
@@ -561,66 +559,12 @@ impl LabelCustomStyle {
     }
 
     pub fn selection_color(mut self, color: impl Into<Brush>) -> Self {
-        self = Self(self.0.set(SelectionColor, color.into()));
+        self = Self(self.0.set(CursorColor, color));
         self
     }
 }
 impl Default for LabelCustomStyle {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct LabelCustomExprStyle(Style);
-impl From<LabelCustomExprStyle> for Style {
-    fn from(value: LabelCustomExprStyle) -> Self {
-        value.0
-    }
-}
-impl From<Style> for LabelCustomExprStyle {
-    fn from(value: Style) -> Self {
-        Self(value)
-    }
-}
-impl LabelCustomExprStyle {
-    pub fn new() -> Self {
-        Self(Style::new())
-    }
-
-    pub fn selectable<T>(mut self, selectable: ContextValue<T>) -> Self
-    where
-        T: Into<bool> + 'static,
-    {
-        self = Self(
-            ExprStyle::from(self.0)
-                .set_context(Selectable, selectable.map(Into::into))
-                .into(),
-        );
-        self
-    }
-
-    pub fn selection_corner_radius<T>(mut self, corner_radius: ContextValue<T>) -> Self
-    where
-        T: Into<f64> + 'static,
-    {
-        self = Self(
-            ExprStyle::from(self.0)
-                .set_context(SelectionCornerRadius, corner_radius.map(Into::into))
-                .into(),
-        );
-        self
-    }
-
-    pub fn selection_color<T>(mut self, color: ContextValue<T>) -> Self
-    where
-        T: Into<Brush> + 'static,
-    {
-        self = Self(
-            ExprStyle::from(self.0)
-                .set_context(SelectionColor, color.map(Into::into))
-                .into(),
-        );
-        self
     }
 }

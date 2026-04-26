@@ -1,19 +1,18 @@
 //! Ocarina 3D viewport panel.
 //!
-//! v0 stub: paints a placeholder background + label so the panel system
-//! plumbing is verified end-to-end. The real viewport — driven by
-//! `ocarina-rhi-wgpu` rendering through Floem's shared `wgpu::Device` —
-//! lands in a follow-up that wires up `WgpuRhi::from_existing(...)` from
-//! a `Canvas` paint callback.
+//! Thin shim over `ocarina_viewport::viewport_panel`. The actual
+//! rendering — pipeline, mesh, camera, RHI handoff, scene walk —
+//! lives in the `ocarina-viewport` crate so it stays out of the
+//! Lapce subtree (clean upstream rebases) and so the rendering core
+//! is reusable by `ocarina-runtime` for shipped builds.
+//!
+//! Pulls the scene + selection signals from `WindowTabData::common`
+//! so this panel and the file explorer share the same source of
+//! truth for "which entity is selected."
 
 use std::rc::Rc;
 
-use floem::{
-    View,
-    peniko::Color,
-    reactive::SignalGet,
-    views::{Decorators, container, label, stack},
-};
+use floem::{View, prelude::SignalGet, views::Decorators};
 
 use super::position::PanelPosition;
 use crate::{
@@ -26,26 +25,17 @@ pub fn viewport_panel(
     _position: PanelPosition,
 ) -> impl View {
     let config = window_tab_data.common.config;
-    container(
-        stack((
-            label(|| "Ocarina Viewport".to_string()).style(|s| {
-                s.font_size(14.0)
-                    .color(Color::from_rgba8(220, 220, 220, 255))
-                    .padding(12.0)
-            }),
-            label(|| "wgpu device sharing wired; RHI handoff pending".to_string())
-                .style(|s| {
-                    s.font_size(11.0)
-                        .color(Color::from_rgba8(140, 140, 150, 255))
-                        .padding_horiz(12.0)
-                }),
-        ))
-        .style(|s| s.flex_col()),
-    )
-    .style(move |s| {
-        s.size_pct(100.0, 100.0)
-            .background(config.get().color(LapceColor::EDITOR_BACKGROUND))
-            .border_color(config.get().color(LapceColor::LAPCE_BORDER))
-    })
-    .debug_name("Ocarina Viewport Panel")
+    let scene = window_tab_data.common.ocarina_scene;
+    let selection = window_tab_data.common.ocarina_selection;
+
+    ocarina_viewport::viewport_panel(scene, selection)
+        .style(move |s| {
+            // The renderer paints on top of this background using
+            // LoadOp::Load, so the panel BG fills any area the viewport
+            // doesn't touch.
+            s.size_pct(100.0, 100.0)
+                .background(config.get().color(LapceColor::EDITOR_BACKGROUND))
+                .border_color(config.get().color(LapceColor::LAPCE_BORDER))
+        })
+        .debug_name("Ocarina Viewport Panel")
 }

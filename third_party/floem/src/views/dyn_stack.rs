@@ -3,15 +3,15 @@ use std::{
     marker::PhantomData,
 };
 
-use floem_reactive::{Effect, Scope};
+use floem_reactive::{as_child_of_current_scope, create_effect, Scope};
 use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 use crate::{
+    app_state::AppState,
     context::UpdateCx,
-    view::ViewId,
+    id::ViewId,
     view::{IntoView, View},
-    window::state::WindowState,
 };
 
 pub(crate) type FxIndexSet<T> = indexmap::IndexSet<T, BuildHasherDefault<FxHasher>>;
@@ -89,7 +89,7 @@ where
     T: 'static,
 {
     let id = ViewId::new();
-    Effect::new(move |prev_hash_run| {
+    create_effect(move |prev_hash_run| {
         let items = each_fn();
         let items = items.into_iter().collect::<SmallVec<[_; 128]>>();
         let hashed_items = items.iter().map(&key_fn).collect::<FxIndexSet<_>>();
@@ -116,7 +116,7 @@ where
         id.update_state(diff);
         HashRun(hashed_items)
     });
-    let view_fn = Box::new(Scope::current().enter_child(move |e| view_fn(e).into_any()));
+    let view_fn = Box::new(as_child_of_current_scope(move |e| view_fn(e).into_any()));
     DynStack {
         id,
         children: Vec::new(),
@@ -138,7 +138,7 @@ impl<T> View for DynStack<T> {
         if let Ok(diff) = state.downcast() {
             apply_diff(
                 self.id(),
-                cx.window_state,
+                cx.app_state,
                 *diff,
                 &mut self.children,
                 &self.view_fn,
@@ -174,19 +174,19 @@ impl<V> Diff<V> {
 }
 
 #[derive(Debug)]
-pub struct DiffOpMove {
+pub(crate) struct DiffOpMove {
     pub(crate) from: usize,
     pub(crate) to: usize,
 }
 
 #[derive(Debug)]
-pub struct DiffOpAdd<V> {
+pub(crate) struct DiffOpAdd<V> {
     pub(crate) at: usize,
     pub(crate) view: Option<V>,
 }
 
 #[derive(Debug)]
-pub struct DiffOpRemove {
+pub(crate) struct DiffOpRemove {
     pub(crate) at: usize,
 }
 
@@ -227,12 +227,12 @@ pub(crate) fn diff<K: Eq + Hash, V>(from: &FxIndexSet<K>, to: &FxIndexSet<K>) ->
     let mut removed_idx = removed.next().map(|k| from.get_full(k).unwrap().0);
 
     for (idx, k) in to.iter().enumerate() {
-        if let Some(added_idx) = added_idx.as_mut().filter(|r_i| **r_i == idx)
-            && let Some(next_added) = added.next().map(|k| to.get_full(k).unwrap().0)
-        {
-            *added_idx = next_added;
+        if let Some(added_idx) = added_idx.as_mut().filter(|r_i| **r_i == idx) {
+            if let Some(next_added) = added.next().map(|k| to.get_full(k).unwrap().0) {
+                *added_idx = next_added;
 
-            normalized_idx = usize::wrapping_sub(normalized_idx, 1);
+                normalized_idx = usize::wrapping_sub(normalized_idx, 1);
+            }
         }
 
         if let Some(removed_idx) = removed_idx.as_mut().filter(|r_i| **r_i == idx) {
@@ -243,13 +243,13 @@ pub(crate) fn diff<K: Eq + Hash, V>(from: &FxIndexSet<K>, to: &FxIndexSet<K>) ->
             }
         }
 
-        if let Some((from_idx, _)) = from.get_full(k)
-            && (from_idx != normalized_idx || from_idx != idx)
-        {
-            move_cmds.push(DiffOpMove {
-                from: from_idx,
-                to: idx,
-            });
+        if let Some((from_idx, _)) = from.get_full(k) {
+            if from_idx != normalized_idx || from_idx != idx {
+                move_cmds.push(DiffOpMove {
+                    from: from_idx,
+                    to: idx,
+                });
+            }
         }
 
         normalized_idx = normalized_idx.wrapping_add(1);
@@ -274,19 +274,19 @@ pub(crate) fn diff<K: Eq + Hash, V>(from: &FxIndexSet<K>, to: &FxIndexSet<K>) ->
 }
 
 fn remove_index(
-    window_state: &mut WindowState,
+    app_state: &mut AppState,
     children: &mut [Option<(ViewId, Scope)>],
     index: usize,
 ) -> Option<()> {
     let (view_id, scope) = std::mem::take(&mut children[index])?;
-    window_state.remove_view(view_id);
+    app_state.remove_view(view_id);
     scope.dispose();
     Some(())
 }
 
-pub(crate) fn apply_diff<T, VF>(
+pub(super) fn apply_diff<T, VF>(
     view_id: ViewId,
-    window_state: &mut WindowState,
+    app_state: &mut AppState,
     mut diff: Diff<T>,
     children: &mut Vec<Option<(ViewId, Scope)>>,
     view_fn: &VF,
@@ -313,13 +313,13 @@ pub(crate) fn apply_diff<T, VF>(
     // 4. Add
     if diff.clear {
         for i in 0..children.len() {
-            remove_index(window_state, children, i);
+            remove_index(app_state, children, i);
         }
         diff.removed.clear();
     }
 
     for DiffOpRemove { at } in diff.removed {
-        remove_index(window_state, children, at);
+        remove_index(app_state, children, at);
     }
 
     for DiffOpMove { from, to } in diff.moved {

@@ -1,6 +1,6 @@
 use std::{borrow::Cow, ops::Range};
 
-use lapce_xi_rope::{Cursor, Rope, interval::IntervalBounds, rope::ChunkIter};
+use lapce_xi_rope::{interval::IntervalBounds, rope::ChunkIter, Cursor, Rope};
 
 use crate::{mode::Mode, paragraph::ParagraphCursor, word::WordCursor};
 
@@ -55,8 +55,7 @@ pub trait RopeText {
         (line, col)
     }
 
-    /// Get the offset for a specific line and column.
-    ///
+    /// Get the offset for a specific line and column.  
     /// This should be preferred over simply adding the column to the line offset, because it
     /// validates better and avoids returning newlines.
     /// ```rust
@@ -108,8 +107,7 @@ pub trait RopeText {
 
     /// Get the offset of the end of the line. The caret decides whether it is after the last
     /// character, or before it.
-    /// If the line is out of bounds, then the last offset (the len) is returned.
-    ///
+    /// If the line is out of bounds, then the last offset (the len) is returned.  
     /// ```rust
     /// # use floem_editor_core::xi_rope::Rope;
     /// # use floem_editor_core::buffer::rope_text::{RopeText, RopeTextRef};
@@ -443,16 +441,16 @@ impl<I: Iterator<Item = (usize, char)>, O: Iterator<Item = I>> Iterator for Char
     type Item = (usize, char);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(current) = &mut self.current_indices
-            && let Some((next_offset, next_ch)) = current.next()
-        {
-            // Shift by the current base offset, which is the accumulated offset from previous
-            // iterators, which makes so the offset produced looks like it is from one long str
-            let next_offset = self.current_base + next_offset;
-            // Store the latest base offset, because we don't know when the current iterator
-            // will end (though technically the str iterator impl does)
-            self.latest_base = next_offset + next_ch.len_utf8();
-            return Some((next_offset, next_ch));
+        if let Some(current) = &mut self.current_indices {
+            if let Some((next_offset, next_ch)) = current.next() {
+                // Shift by the current base offset, which is the accumulated offset from previous
+                // iterators, which makes so the offset produced looks like it is from one long str
+                let next_offset = self.current_base + next_offset;
+                // Store the latest base offset, because we don't know when the current iterator
+                // will end (though technically the str iterator impl does)
+                self.latest_base = next_offset + next_ch.len_utf8();
+                return Some((next_offset, next_ch));
+            }
         }
 
         // Otherwise, if we didn't return something above, then we get a next iterator

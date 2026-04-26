@@ -84,11 +84,10 @@ lapce-proxy = { path = "./lapce-proxy" }
 # path = "../floem"
 git = "https://github.com/lapce/floem"
 rev = "31fa8f444c37f4c314f47d88c23ffdbc25f2ab53"
-# rfd-async-std was removed in our local Floem (subtree pinned to a
-# newer rev than this git rev); the [patch] in our root Cargo.toml
-# redirects this dep to third_party/floem/. File-dialog async runtime
-# selection now uses Floem's default.
-features = ["editor", "serde", "default-image-formats"]
+# rfd-async-std gates the re-export of `floem::file_action::*` into
+# `floem::action`, which is where lapce-app imports `open_file` /
+# `save_as` from. Without this feature, those imports break.
+features = ["editor", "serde", "default-image-formats", "rfd-async-std"]
 
 [workspace.dependencies.floem-editor-core]
 # path = "../floem/editor-core/"
@@ -104,6 +103,18 @@ regalloc2 = { rev = "5d79e12d0a93b10fc181f4da409b4671dd365228", git = "https://g
 # cargo vendor issue: https://github.com/rust-lang/cargo/issues/10310
 # dpi comes from winit (source) and muda (crate)
 dpi = { git = "https://github.com/rust-windowing/winit", rev = "ee245c569d65fdeacf705ee5eedb564508d10ebe" }
+
+# Redirect the git-sourced Floem above to our local subtree at
+# ../floem. Without this, lapce-app's deps and ocarina-viewport's deps
+# would resolve to two different `floem_reactive` crates (one from
+# git+rev = 31fa8f44, one from the path dep), and trait identity
+# breaks across the seam — e.g. `RwSignal` from one side wouldn't
+# satisfy `SignalGet` from the other. The local subtree IS pinned to
+# the same rev, plus the `submit_wgpu_pass` patches the viewport
+# panel needs for direct-GPU compositing.
+[patch."https://github.com/lapce/floem"]
+floem = { path = "../floem" }
+floem-editor-core = { path = "../floem/editor-core" }
 
 
 [workspace.dependencies.tracing]

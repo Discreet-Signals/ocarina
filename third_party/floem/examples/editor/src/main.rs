@@ -1,12 +1,16 @@
 use floem::{
-    prelude::*,
-    views::editor::{
-        command::{Command, CommandExecuted},
-        core::{
-            command::EditCommand, cursor::CursorAffinity, editor::EditType, selection::Selection,
+    keyboard::{Key, NamedKey},
+    reactive::{RwSignal, SignalGet, SignalUpdate},
+    views::{
+        button,
+        editor::{
+            command::{Command, CommandExecuted},
+            core::{command::EditCommand, editor::EditType, selection::Selection},
+            text::{default_dark_color, SimpleStyling},
         },
-        text::{default_dark_color, SimpleStyling},
+        stack, text_editor, Decorators,
     },
+    IntoView, View,
 };
 
 fn app_view() -> impl IntoView {
@@ -42,30 +46,32 @@ fn app_view() -> impl IntoView {
         .placeholder("Some placeholder text");
     let doc = editor_a.doc();
 
-    Stack::new((
+    let view = stack((
         editor_a,
         editor_b,
-        Stack::new((
-            Button::new("Clear").action(move || {
+        stack((
+            button("Clear").action(move || {
                 doc.edit_single(
-                    Selection::region(0, doc.text().len(), CursorAffinity::Backward),
+                    Selection::region(0, doc.text().len()),
                     "",
                     EditType::DeleteSelection,
                 );
             }),
-            Button::new("Flip Gutter").action(move || {
+            button("Flip Gutter").action(move || {
                 hide_gutter_a.update(|hide| *hide = !*hide);
                 hide_gutter_b.update(|hide| *hide = !*hide);
             }),
         ))
         .style(|s| s.width_full().flex_row().items_center().justify_center()),
     ))
-    .style(|s| s.size_full().flex_col().items_center().justify_center())
-    .on_event_stop(el::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
-        if let Key::Named(NamedKey::F11) = key {
-            floem::action::inspect();
-        }
-    })
+    .style(|s| s.size_full().flex_col().items_center().justify_center());
+
+    let id = view.id();
+    view.on_key_up(
+        Key::Named(NamedKey::F11),
+        |m| m.is_empty(),
+        move |_| id.inspect(),
+    )
 }
 
 fn main() {

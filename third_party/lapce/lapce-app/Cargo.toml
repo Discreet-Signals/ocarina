@@ -50,6 +50,14 @@ url                = { workspace = true }
 zstd               = { workspace = true }
 floem              = { workspace = true }
 
+# Ocarina engine deps. Path-relative to lapce-app's Cargo.toml. Cargo
+# follows the path back into our root workspace where these crates
+# live; their `workspace = true` deps resolve against our root's
+# [workspace.dependencies], not Lapce's, because that's where their
+# package roots live.
+ocarina-viewport = { path = "../../../crates/ocarina-viewport" }
+ocarina-scene    = { path = "../../../crates/ocarina-scene" }
+
 pulldown-cmark   = { version = "0.11.0" }
 Inflector        = { version = "0.11.4" }
 open             = { version = "5.1.4" }

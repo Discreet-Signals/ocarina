@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashSet},
     env,
     path::{Path, PathBuf},
@@ -155,6 +156,17 @@ pub struct CommonData {
     // the current focused view which will receive keyboard events
     pub keyboard_focus: RwSignal<Option<ViewId>>,
     pub window_common: Rc<WindowCommonData>,
+
+    /// Live ECS scene loaded from the workspace's project root.
+    /// `None` until a folder containing an Ocarina project is opened.
+    /// Shared between the viewport panel (renders entities) and the
+    /// file explorer (resolves selection clicks to entities).
+    pub ocarina_scene: ocarina_viewport::SceneSignal,
+    /// Currently selected entity + the folder it corresponds to on
+    /// disk. Single source of truth between viewport and file
+    /// explorer — selecting in either updates this signal, and both
+    /// panels read it for highlight rendering.
+    pub ocarina_selection: ocarina_viewport::SelectionSignal,
 }
 
 impl std::fmt::Debug for CommonData {
@@ -367,6 +379,11 @@ impl WindowTabData {
             text_layout.size().height
         });
 
+        // Initialize the Ocarina scene + selection signals. These live
+        // in CommonData so any panel (viewport, file explorer, lens)
+        // can subscribe to them. Scene-from-workspace happens below.
+        let (ocarina_scene, ocarina_selection) = ocarina_viewport::make_signals();
+
         let common = Rc::new(CommonData {
             workspace: workspace.clone(),
             scope: cx,
@@ -394,7 +411,29 @@ impl WindowTabData {
             breakpoints: cx.create_rw_signal(BTreeMap::new()),
             keyboard_focus: cx.create_rw_signal(None),
             window_common: window_common.clone(),
+            ocarina_scene,
+            ocarina_selection,
         });
+
+        // If the workspace points at a directory, eagerly load it as
+        // an Ocarina scene. The viewport panel reads from this signal
+        // each frame — None means render an empty viewport.
+        //
+        // Filesystem hot-reload (notify watcher → reapply edits) lands
+        // in a follow-up; v1 is load-once on workspace open.
+        if let Some(root) = workspace.path.clone() {
+            let (scene, report) = ocarina_scene::loader::open(root);
+            tracing::info!(
+                "ocarina-scene loaded: {} entities, {} components, {} errors",
+                scene.entity_count(),
+                scene.component_instance_count(),
+                report.errors.len(),
+            );
+            for err in &report.errors {
+                tracing::warn!("ocarina-scene load error: {err}");
+            }
+            ocarina_scene.set(Some(Rc::new(RefCell::new(scene))));
+        }
 
         let main_split = MainSplitData::new(cx, common.clone());
         let code_action =

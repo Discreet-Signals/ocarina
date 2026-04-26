@@ -259,16 +259,27 @@ impl ViewportRenderer {
             return;
         }
 
-        // Recreate depth target on resize.
-        if self.depth_size != (pixel_w, pixel_h) {
+        // The depth attachment must match the *color* attachment's
+        // extent — wgpu enforces "all attachments in a render pass
+        // share the same size." Our color attachment is the host
+        // swapchain texture (`ctx.view`), full size `ctx.target_size`.
+        // Using `ctx.rect` for the depth here would trip the
+        // "Attachments have differing sizes" validation. Drawing is
+        // still confined to the panel by `set_viewport`/`set_scissor`
+        // below.
+        let (depth_w, depth_h) = ctx.target_size;
+        if depth_w == 0 || depth_h == 0 {
+            return;
+        }
+        if self.depth_size != (depth_w, depth_h) {
             if let Some(d) = self.depth.take() {
                 self.rhi.destroy_texture(d);
             }
             match self.rhi.create_texture(&TextureDesc {
                 label: Some("viewport.depth"),
                 dimension: TextureDimension::D2 {
-                    width: pixel_w,
-                    height: pixel_h,
+                    width: depth_w,
+                    height: depth_h,
                     array_layers: 1,
                 },
                 format: DEPTH_FORMAT,
@@ -278,7 +289,7 @@ impl ViewportRenderer {
             }) {
                 Ok(d) => {
                     self.depth = Some(d);
-                    self.depth_size = (pixel_w, pixel_h);
+                    self.depth_size = (depth_w, depth_h);
                 }
                 Err(e) => {
                     log::warn!("viewport: depth create failed: {e}");
@@ -364,7 +375,6 @@ impl ViewportRenderer {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
-                    depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: depth_view,
@@ -386,12 +396,17 @@ impl ViewportRenderer {
                 0.0,
                 1.0,
             );
-            pass.set_scissor_rect(
-                ctx.rect.x0.max(0.0) as u32,
-                ctx.rect.y0.max(0.0) as u32,
-                pixel_w,
-                pixel_h,
-            );
+            // Clamp scissor to the target so a panel that extends past
+            // the swapchain edge (e.g. mid-resize) doesn't trigger
+            // wgpu's "scissor outside attachment" validation.
+            let sx = ctx.rect.x0.max(0.0) as u32;
+            let sy = ctx.rect.y0.max(0.0) as u32;
+            let sw = pixel_w.min(depth_w.saturating_sub(sx));
+            let sh = pixel_h.min(depth_h.saturating_sub(sy));
+            if sw == 0 || sh == 0 {
+                return;
+            }
+            pass.set_scissor_rect(sx, sy, sw, sh);
 
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, camera_bg, &[]);

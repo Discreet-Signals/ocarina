@@ -81,18 +81,41 @@ impl Default for Pools {
 
 // ────────── WgpuRhi ──────────
 
+// Field order matters: Rust drops fields in declaration order. Pool
+// resources (Buffer, Texture, etc.) hold internal references back to
+// the Device. If `device` were declared above `pools`, the device
+// handle would drop first; in editor mode where Floem also holds a
+// clone the underlying device survives, but on standalone shutdown
+// we have seen wgpu's drop validation panic on stale Buffer handles
+// — and any panic from a destructor during process exit upgrades
+// to `panic_in_cleanup → abort`. Declaring pools/destroy/queue/device
+// in that order, plus the explicit `Drop` below, guarantees pool
+// resources tear down first.
 pub struct WgpuRhi {
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
-    /// The wgpu `Instance` is only retained when `WgpuRhi` owns the full
-    /// context (standalone mode). In editor mode we piggyback on eframe's
-    /// context, which doesn't hand us its instance. Kept alive here so the
-    /// surface stored in the swapchain pool has a valid backing.
-    #[allow(dead_code)]
-    pub(crate) instance: Option<wgpu::Instance>,
     pub(crate) pools: Pools,
     destroy: DestroyQueue,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) device: wgpu::Device,
+    /// The wgpu `Instance` is only retained when `WgpuRhi` owns the full
+    /// context (standalone mode). In editor mode we piggyback on the
+    /// host's context, which doesn't hand us its instance. Kept alive
+    /// here so the surface stored in the swapchain pool has a valid
+    /// backing.
+    #[allow(dead_code)]
+    pub(crate) instance: Option<wgpu::Instance>,
     caps: Capabilities,
+}
+
+impl Drop for WgpuRhi {
+    fn drop(&mut self) {
+        // Belt-and-suspenders against drop ordering: explicitly clear
+        // the pools and the destroy queue before the implicit field
+        // drops walk over `device`/`queue`/`instance`. wgpu resource
+        // handles drop cleanly here because the device clone is still
+        // alive in `self.device` at this point.
+        self.pools = Pools::default();
+        self.destroy = DestroyQueue::new();
+    }
 }
 
 impl WgpuRhi {
@@ -151,16 +174,17 @@ impl WgpuRhi {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .map_err(|e| RhiError::AdapterUnavailable(e.to_string()))?;
+        .ok_or_else(|| RhiError::AdapterUnavailable("no adapter".into()))?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("ocarina.device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::Off,
-        }))
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("ocarina.device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+            },
+            None,
+        ))
         .map_err(|e| RhiError::DeviceUnavailable(e.to_string()))?;
 
         // Pick a surface format. Prefer sRGB for "correct" rendering; fall
@@ -968,9 +992,7 @@ impl Rhi for WgpuRhi {
     }
 
     fn wait_idle(&mut self) {
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("wgpu device poll failed");
+        self.device.poll(wgpu::Maintain::Wait);
         for bucket in self.destroy.drain_all() {
             self.release_bucket(&bucket);
         }

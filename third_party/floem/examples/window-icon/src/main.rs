@@ -1,18 +1,20 @@
 use floem::{
     close_window,
+    event::{Event, EventListener},
+    keyboard::{Key, NamedKey},
     kurbo::Size,
     new_window,
-    prelude::*,
-    window::{Icon, RgbaIcon, WindowConfig, WindowId},
-    Application, IntoView,
+    views::{button, label, v_stack, Decorators},
+    window::{Icon, WindowConfig, WindowId},
+    Application, IntoView, View,
 };
 use std::path::Path;
 
 fn sub_window_view(id: WindowId) -> impl IntoView {
-    Stack::vertical((
-        Label::derived(move || String::from("This window has an icon from an SVG file."))
+    v_stack((
+        label(move || String::from("This window has an icon from an SVG file."))
             .style(|s| s.font_size(30.0)),
-        Button::new("Close this window").action(move || close_window(id)),
+        button("Close this window").action(move || close_window(id)),
     ))
     .style(|s| {
         s.flex_col()
@@ -25,10 +27,10 @@ fn sub_window_view(id: WindowId) -> impl IntoView {
 }
 
 fn app_view() -> impl IntoView {
-    Stack::vertical((
-        Label::derived(move || String::from("This window has an icon from a PNG file"))
+    let view = v_stack((
+        label(move || String::from("This window has an icon from a PNG file"))
             .style(|s| s.font_size(30.0)),
-        Button::new("Open another window").action(|| {
+        button("Open another window").action(|| {
             let svg_icon = load_svg_icon(include_str!("../assets/ferris.svg"));
             new_window(
                 sub_window_view,
@@ -48,10 +50,14 @@ fn app_view() -> impl IntoView {
             .width_full()
             .height_full()
             .row_gap(10.0)
-    })
-    .on_event_stop(listener::KeyUp, move |_cx, KeyboardEvent { key, .. }| {
-        if let Key::Named(NamedKey::F11) = key {
-            floem::action::inspect();
+    });
+
+    let id = view.id();
+    view.on_event_stop(EventListener::KeyUp, move |e| {
+        if let Event::KeyUp(e) = e {
+            if e.key.logical_key == Key::Named(NamedKey::F11) {
+                id.inspect();
+            }
         }
     })
 }
@@ -82,17 +88,11 @@ fn load_png_icon(path: &Path) -> Icon {
         let rgba = image.into_raw();
         (rgba, width, height)
     };
-
-    RgbaIcon::new(icon_rgba, icon_width, icon_height)
-        .expect("Failed to open icon")
-        .into()
+    Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to open icon")
 }
 
 fn load_svg_icon(svg: &str) -> Icon {
     let svg = nsvg::parse_str(svg, nsvg::Units::Pixel, 96.0).unwrap();
     let (icon_width, icon_height, icon_rgba) = svg.rasterize_to_raw_rgba(1.0).unwrap();
-
-    RgbaIcon::new(icon_rgba, icon_width, icon_height)
-        .expect("Failed to open icon")
-        .into()
+    Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to open icon")
 }
