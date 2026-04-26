@@ -55,10 +55,12 @@ impl OrbitCamera {
     }
 
     /// Drag delta in pixels → rotation in radians. Multiplier tuned for feel.
+    /// Pitch follows the cursor's vertical motion (drag down → look down)
+    /// to match the convention the rest of the editor uses.
     pub fn orbit(&mut self, dx_px: f32, dy_px: f32) {
         const PIXELS_PER_RAD: f32 = 200.0;
         self.yaw -= dx_px / PIXELS_PER_RAD;
-        self.pitch = (self.pitch - dy_px / PIXELS_PER_RAD).clamp(-1.45, 1.45);
+        self.pitch = (self.pitch + dy_px / PIXELS_PER_RAD).clamp(-1.45, 1.45);
     }
 
     /// Drag delta in pixels → lateral target translation in world space.

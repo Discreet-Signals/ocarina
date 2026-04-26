@@ -393,6 +393,14 @@ impl FileExplorerData {
     }
 
     pub fn click(&self, path: &Path, config: ReadSignal<Arc<LapceConfig>>) {
+        // Mirror the click into the Ocarina selection signal: when
+        // someone clicks a folder (or a file inside a folder) in the
+        // explorer, the viewport should highlight the corresponding
+        // entity. The reverse direction is handled in the viewport
+        // panel — together they make file explorer ↔ viewport one
+        // shared selection.
+        self.sync_ocarina_selection(path);
+
         if self.is_dir(path) {
             self.toggle_expand(path);
         } else if !config.get_untracked().core.file_explorer_double_click {
@@ -401,6 +409,37 @@ impl FileExplorerData {
                 .send(InternalCommand::OpenFile {
                     path: path.to_path_buf(),
                 })
+        }
+    }
+
+    /// Resolve `path` to an Ocarina entity (via the scene's
+    /// `dir_entity` map) and write it to the selection signal. A click
+    /// on a file maps to the entity of its containing folder, since
+    /// that's where Ocarina aggregates components. No-op if no scene
+    /// is loaded or the path doesn't correspond to a known entity.
+    fn sync_ocarina_selection(&self, path: &Path) {
+        let Some(scene_rc) = self.common.ocarina_scene.get_untracked() else {
+            return;
+        };
+        // Scene paths are canonicalized at load time; do the same on
+        // the explorer side or the lookup will miss.
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let dir = if canonical.is_dir() {
+            canonical
+        } else {
+            canonical
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or(canonical)
+        };
+        let entity = scene_rc.borrow().dir_entity.get(&dir).copied();
+        if let Some(entity) = entity {
+            self.common
+                .ocarina_selection
+                .set(Some(ocarina_viewport::ViewportSelection {
+                    entity,
+                    folder: dir,
+                }));
         }
     }
 

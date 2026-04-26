@@ -31,21 +31,20 @@ mod renderer;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-
-use bevy_ecs::entity::Entity;
 use std::time::Duration;
 
+use bevy_ecs::entity::Entity;
 use floem::{
     View,
     action::exec_after,
     event::{Event, EventListener},
-    kurbo::{Point, Rect},
+    kurbo::{Point, Rect, Size},
     reactive::{RwSignal, SignalGet, SignalUpdate},
     style::CursorStyle,
     views::{Decorators, canvas},
 };
 use floem_renderer::WgpuPassCtx;
-use glam::Vec4;
+use glam::{Vec3, Vec4};
 use ocarina_core::components::BasicMesh;
 use ocarina_scene::Scene;
 
@@ -121,6 +120,11 @@ pub fn viewport_panel(
             let scene = scene_signal.get();
             let selected_entity = selection_signal.get().map(|s| s.entity);
 
+            // Cache the panel's current logical size so the click-pick
+            // handler (which only sees pointer position, not size) can
+            // convert clicks to UV.
+            state.borrow_mut().last_size = size;
+
             let local_rect = Rect::ZERO.with_size(size);
             let state = state.clone();
             let pass: floem_renderer::WgpuPass = Box::new(move |ctx: WgpuPassCtx<'_>| {
@@ -140,6 +144,7 @@ pub fn viewport_panel(
             let Event::PointerDown(pe) = e else { return };
             let mut s = state.borrow_mut();
             s.last_pointer = Some(pe.pos);
+            s.dragged = false;
             s.drag_mode = match pe.button.mouse_button() {
                 floem::pointer::MouseButton::Primary => Some(DragMode::Orbit),
                 floem::pointer::MouseButton::Secondary
@@ -156,6 +161,12 @@ pub fn viewport_panel(
             if let (Some(prev), Some(mode)) = (s.last_pointer, s.drag_mode) {
                 let dx = (pm.pos.x - prev.x) as f32;
                 let dy = (pm.pos.y - prev.y) as f32;
+                // 2 px deadzone before a press counts as a drag —
+                // anything tighter classifies a steady-hand click as
+                // an orbit and never picks.
+                if dx.abs() + dy.abs() > 2.0 {
+                    s.dragged = true;
+                }
                 match mode {
                     DragMode::Orbit => s.camera.orbit(dx, dy),
                     DragMode::Pan => s.camera.pan(dx, dy),
@@ -166,8 +177,37 @@ pub fn viewport_panel(
     })
     .on_event_stop(EventListener::PointerUp, {
         let state = state.clone();
-        move |_e: &Event| {
+        move |e: &Event| {
+            let Event::PointerUp(pe) = e else { return };
+            let was_primary_click = pe.button.mouse_button()
+                == floem::pointer::MouseButton::Primary
+                && !state.borrow().dragged;
+            // Always release the drag handles even if we end up picking.
             state.borrow_mut().drag_mode = None;
+            if !was_primary_click {
+                return;
+            }
+            // Resolve scene + camera + size, then run the pick out of
+            // band — `pick_at` borrow_mut's the scene and we don't want
+            // to nest that under PanelState's borrow.
+            let scene_rc = scene_signal.get_untracked();
+            let (camera_state, size) = {
+                let s = state.borrow();
+                (clone_camera(&s.camera), s.last_size)
+            };
+            let Some(scene_rc) = scene_rc else { return };
+            let mut scene = scene_rc.borrow_mut();
+            let pick = pick_at(pe.pos, size, &camera_state, &mut scene);
+            drop(scene);
+            match pick {
+                Some((entity, folder)) => {
+                    selection_signal.set(Some(ViewportSelection { entity, folder }));
+                }
+                None => {
+                    // Click on empty space clears the selection.
+                    selection_signal.set(None);
+                }
+            }
         }
     })
     .on_event_stop(EventListener::PointerWheel, {
@@ -212,6 +252,14 @@ struct PanelState {
     drag_mode: Option<DragMode>,
     /// Last pointer position (logical pixels) for delta computation.
     last_pointer: Option<Point>,
+    /// Panel size in logical pixels, refreshed each paint. Read by the
+    /// click-pick path (which needs to convert a pointer position into
+    /// a normalized UV for the camera ray).
+    last_size: Size,
+    /// Set true the first time the pointer moves with a `drag_mode`
+    /// active. Distinguishes "primary click" (no movement → pick) from
+    /// "primary drag" (orbit). Reset on every PointerDown.
+    dragged: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -227,6 +275,8 @@ impl PanelState {
             camera: OrbitCamera::new(glam::Vec3::ZERO, 6.0),
             drag_mode: None,
             last_pointer: None,
+            last_size: Size::ZERO,
+            dragged: false,
         }
     }
 
@@ -280,6 +330,87 @@ impl PanelState {
 
         let mode = RenderMode::Edit { selected_entity };
         renderer.render(&entities, ctx, camera, mode);
+    }
+}
+
+/// Snapshot the orbit camera's mutable state so the pick path can
+/// reuse it without borrowing PanelState across the scene mutation.
+fn clone_camera(c: &OrbitCamera) -> OrbitCamera {
+    OrbitCamera {
+        target: c.target,
+        distance: c.distance,
+        yaw: c.yaw,
+        pitch: c.pitch,
+        fov_y: c.fov_y,
+        near: c.near,
+        far: c.far,
+    }
+}
+
+/// Cast a ray through `pos_logical` and return the closest hit entity
+/// + its folder path, if any. Hit-tests every entity that has a world
+/// transform against the unit cube `[-0.5, 0.5]^3` in its local frame
+/// — matches the cube placeholder the renderer draws for each entity.
+fn pick_at(
+    pos_logical: Point,
+    size_logical: Size,
+    camera: &OrbitCamera,
+    scene: &mut Scene,
+) -> Option<(Entity, PathBuf)> {
+    if size_logical.width <= 0.0 || size_logical.height <= 0.0 {
+        return None;
+    }
+    let aspect = (size_logical.width / size_logical.height) as f32;
+    let u = (pos_logical.x / size_logical.width).clamp(0.0, 1.0) as f32;
+    let v = (pos_logical.y / size_logical.height).clamp(0.0, 1.0) as f32;
+    let (origin, dir) = camera.ray_through_uv(u, v, aspect);
+
+    let mut best: Option<(f32, Entity)> = None;
+    for (entity, world_xform) in scene.world_transforms() {
+        let inv = world_xform.inverse();
+        let local_origin = inv.transform_point3(origin);
+        let local_dir = inv.transform_vector3(dir);
+        // ray_aabb's t is in units of |local_dir|; since we transformed
+        // both origin and dir through the same matrix, that t is the
+        // same parameter as for the world ray and is comparable across
+        // entities without renormalizing.
+        if let Some(t) = ray_aabb(local_origin, local_dir, Vec3::splat(-0.5), Vec3::splat(0.5)) {
+            if t < 0.0 {
+                continue;
+            }
+            if best.map_or(true, |(bt, _)| t < bt) {
+                best = Some((t, entity));
+            }
+        }
+    }
+
+    let (_, entity) = best?;
+    let folder = scene
+        .dir_entity
+        .iter()
+        .find_map(|(p, &e)| (e == entity).then(|| p.clone()))?;
+    Some((entity, folder))
+}
+
+/// Slab-method ray vs axis-aligned box. Returns the entry distance `t`
+/// (in units of `ray_dir`) if the ray hits, otherwise `None`. Negative
+/// `t` means the box is behind the ray origin.
+fn ray_aabb(ray_origin: Vec3, ray_dir: Vec3, min: Vec3, max: Vec3) -> Option<f32> {
+    let inv = Vec3::new(
+        if ray_dir.x.abs() > 1e-8 { 1.0 / ray_dir.x } else { f32::INFINITY },
+        if ray_dir.y.abs() > 1e-8 { 1.0 / ray_dir.y } else { f32::INFINITY },
+        if ray_dir.z.abs() > 1e-8 { 1.0 / ray_dir.z } else { f32::INFINITY },
+    );
+    let t1 = (min - ray_origin) * inv;
+    let t2 = (max - ray_origin) * inv;
+    let tmin = t1.min(t2);
+    let tmax = t1.max(t2);
+    let near = tmin.x.max(tmin.y).max(tmin.z);
+    let far = tmax.x.min(tmax.y).min(tmax.z);
+    if far < near.max(0.0) {
+        None
+    } else {
+        Some(near.max(0.0))
     }
 }
 
