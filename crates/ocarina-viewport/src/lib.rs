@@ -44,7 +44,7 @@ use floem::{
     views::{Decorators, canvas},
 };
 use floem_renderer::WgpuPassCtx;
-use glam::{Vec3, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use ocarina_core::components::BasicMesh;
 use ocarina_scene::Scene;
 
@@ -415,10 +415,26 @@ fn ray_aabb(ray_origin: Vec3, ray_dir: Vec3, min: Vec3, max: Vec3) -> Option<f32
 }
 
 /// Walk the scene's entities (folding parent transforms via
-/// `Scene::world_transforms`), pair each with its `BasicMesh.tint` if
-/// present, otherwise the default neutral cool grey.
+/// `Scene::world_transforms`), pair each with a renderer-friendly
+/// `EntityInstance`. Entities with a `BasicMesh` render at full
+/// (placeholder cube) size with the mesh's tint. Entities without a
+/// mesh — pure-Transform "empties" like cameras or organizational
+/// nodes — render as a small gold marker cube ("dot") so they're
+/// visible and selectable in the viewport without being mistaken for
+/// real geometry.
+///
+/// The dot's small visual size is purely a renderer concern: pick
+/// hit-testing in `pick_at` keeps using the entity's actual world
+/// transform (a unit cube), so clicking near a meshless entity still
+/// selects it generously even though the visual marker is tiny.
 fn build_entity_instances(scene: &mut Scene) -> Vec<EntityInstance> {
-    const DEFAULT_TINT: Vec4 = Vec4::new(0.78, 0.82, 0.90, 1.0);
+    /// Soft gold so the dot reads as "marker, not geometry" against
+    /// the cool-grey default mesh tint.
+    const DOT_TINT: Vec4 = Vec4::new(0.95, 0.85, 0.40, 1.0);
+    /// World-space size of the meshless marker cube. Constant in
+    /// world units (the v0 trade-off vs. constant-screen-size dots,
+    /// which would need viewport size in the shader).
+    const DOT_SCALE: f32 = 0.1;
 
     let world_xforms = scene.world_transforms();
 
@@ -427,12 +443,16 @@ fn build_entity_instances(scene: &mut Scene) -> Vec<EntityInstance> {
     let world = &mut scene.world;
     let mut instances = Vec::with_capacity(world_xforms.len());
     for (entity, world_xform) in world_xforms {
-        let tint = world
-            .get::<BasicMesh>(entity)
-            .map_or(DEFAULT_TINT, |m| m.tint);
+        let (final_xform, tint) = match world.get::<BasicMesh>(entity) {
+            Some(m) => (world_xform, m.tint),
+            None => (
+                world_xform * Mat4::from_scale(Vec3::splat(DOT_SCALE)),
+                DOT_TINT,
+            ),
+        };
         instances.push(EntityInstance {
             entity,
-            world_xform,
+            world_xform: final_xform,
             tint,
         });
     }

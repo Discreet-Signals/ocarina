@@ -37,6 +37,7 @@ use crate::mesh::{self, Vertex};
 
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 const LIT_WGSL: &str = include_str!("../shaders/lit.wgsl");
+const OUTLINE_WGSL: &str = include_str!("../shaders/outline.wgsl");
 
 /// std140-laid-out camera UBO consumed by `lit.wgsl` at bind group 0.
 #[repr(C)]
@@ -112,6 +113,10 @@ pub struct ViewportRenderer {
     rhi: WgpuRhi,
 
     pipeline: PipelineHandle,
+    /// Inverted-hull pipeline: redraws the selected mesh after the lit
+    /// pass with cull_mode = Front and a normal-direction vertex push
+    /// to produce a screen-space silhouette outline.
+    outline_pipeline: PipelineHandle,
     camera_bg: BindGroupHandle,
     instance_bg: BindGroupHandle,
     camera_buffer: BufferHandle,
@@ -227,9 +232,36 @@ impl ViewportRenderer {
         rhi.destroy_shader(vs);
         rhi.destroy_shader(fs);
 
+        // Outline pipeline: same vertex/instance layout, different
+        // shader + cull-front to produce a silhouette outline of the
+        // selected mesh.
+        let outline_vs = rhi.create_shader(&ShaderDesc {
+            label: Some("outline.wgsl:vs_main"),
+            stage: ShaderStage::Vertex,
+            entry_point: "vs_main",
+            bytecode: ShaderBytecode::Wgsl(OUTLINE_WGSL),
+        })?;
+        let outline_fs = rhi.create_shader(&ShaderDesc {
+            label: Some("outline.wgsl:fs_main"),
+            stage: ShaderStage::Fragment,
+            entry_point: "fs_main",
+            bytecode: ShaderBytecode::Wgsl(OUTLINE_WGSL),
+        })?;
+        let outline_pipeline = build_outline_pipeline(
+            &mut rhi,
+            outline_vs,
+            outline_fs,
+            camera_bgl,
+            instance_bgl,
+            target_format,
+        )?;
+        rhi.destroy_shader(outline_vs);
+        rhi.destroy_shader(outline_fs);
+
         Ok(Self {
             rhi,
             pipeline,
+            outline_pipeline,
             camera_bg,
             instance_bg,
             camera_buffer,
@@ -347,6 +379,11 @@ impl ViewportRenderer {
         let Some(pipeline) = self.rhi.graphics_pipeline(self.pipeline) else {
             return;
         };
+        let Some(outline_pipeline) =
+            self.rhi.graphics_pipeline(self.outline_pipeline)
+        else {
+            return;
+        };
         let Some(camera_bg) = self.rhi.bind_group(self.camera_bg) else {
             return;
         };
@@ -358,6 +395,18 @@ impl ViewportRenderer {
         };
         let Some(cube_ib) = self.rhi.buffer(self.cube_ib) else {
             return;
+        };
+
+        // Find the instance index of the selected entity, if any. The
+        // outline pass below redraws just that one through the
+        // outline pipeline. `entities` is sorted by Entity in the
+        // caller, so this is the same index the main draw used.
+        let outline_instance: Option<u32> = match mode {
+            RenderMode::Edit { selected_entity: Some(sel) } => entities[..count]
+                .iter()
+                .position(|inst| inst.entity == sel)
+                .map(|i| i as u32),
+            _ => None,
         };
 
         let mut encoder = ctx
@@ -416,6 +465,21 @@ impl ViewportRenderer {
             for i in 0..count {
                 let dyn_offset = (i as u64 * INSTANCE_STRIDE) as u32;
                 pass.set_bind_group(1, instance_bg, &[dyn_offset]);
+                pass.draw_indexed(0..self.cube_index_count, 0, 0..1);
+            }
+
+            // Outline pass: redraw the selected entity through the
+            // inverted-hull pipeline. Inherits the depth values written
+            // by the main pass above (same render pass), so the hull is
+            // depth-tested against the actual mesh and only visible at
+            // the silhouette boundary.
+            if let Some(outline_idx) = outline_instance {
+                let dyn_offset = (u64::from(outline_idx) * INSTANCE_STRIDE) as u32;
+                pass.set_pipeline(outline_pipeline);
+                pass.set_bind_group(0, camera_bg, &[]);
+                pass.set_bind_group(1, instance_bg, &[dyn_offset]);
+                pass.set_vertex_buffer(0, cube_vb.slice(..));
+                pass.set_index_buffer(cube_ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.cube_index_count, 0, 0..1);
             }
         }
@@ -511,6 +575,85 @@ fn build_pipeline(
                 format: DEPTH_FORMAT,
                 depth_write_enabled: true,
                 depth_compare: CompareFunction::Less,
+                stencil_front: Default::default(),
+                stencil_back: Default::default(),
+                stencil_read_mask: 0,
+                stencil_write_mask: 0,
+                bias: Default::default(),
+            }),
+            multisample: MultisampleState::default(),
+        }),
+        bind_group_layouts: &[camera_bgl, instance_bgl],
+        push_constant_ranges: &[],
+    })
+}
+
+/// Outline pipeline. Same vertex layout as `build_pipeline` but
+/// `cull_mode = Front` (so the inverted hull's back faces are what
+/// actually gets drawn — they form the silhouette around the original
+/// mesh) and `depth_write_enabled = false` (the outline shouldn't
+/// disturb depth for anything drawn after it).
+fn build_outline_pipeline(
+    rhi: &mut WgpuRhi,
+    vs: ShaderHandle,
+    fs: ShaderHandle,
+    camera_bgl: BindGroupLayoutHandle,
+    instance_bgl: BindGroupLayoutHandle,
+    color_format: TextureFormat,
+) -> RhiResult<PipelineHandle> {
+    let attributes = [
+        VertexAttribute {
+            format: VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32x3,
+            offset: 12,
+            shader_location: 1,
+        },
+        VertexAttribute {
+            format: VertexFormat::Float32x2,
+            offset: 24,
+            shader_location: 2,
+        },
+    ];
+    let vertex_buffers = [VertexBufferLayout {
+        array_stride: Vertex::SIZE as u64,
+        step_mode: VertexStepMode::Vertex,
+        attributes: &attributes,
+    }];
+    let color_targets = [Some(ColorTargetState {
+        format: color_format,
+        blend: Some(ocarina_rhi::BlendState::ALPHA_BLENDING),
+        write_mask: ColorWrites::ALL,
+    })];
+    rhi.create_pipeline(&PipelineDesc {
+        label: Some("outline"),
+        kind: PipelineKind::Graphics(GraphicsPipelineDesc {
+            vertex: VertexStage {
+                shader: vs,
+                buffers: &vertex_buffers,
+            },
+            fragment: Some(FragmentStage {
+                shader: fs,
+                targets: &color_targets,
+            }),
+            primitive: PrimitiveState {
+                cull_mode: Some(ocarina_rhi::Face::Front),
+                ..PrimitiveState::default()
+            },
+            depth_stencil: Some(DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                // LessEqual: outline pixel passes when at or in front
+                // of the existing depth. Where the main mesh wrote
+                // depth, the hull's pushed-out z is slightly greater
+                // (behind), so it fails — no draw inside the mesh's
+                // silhouette. In empty area depth is 1.0 (cleared);
+                // hull z < 1.0, so it draws. Net effect: outline
+                // visible only at the silhouette edge.
+                depth_compare: CompareFunction::LessEqual,
                 stencil_front: Default::default(),
                 stencil_back: Default::default(),
                 stencil_read_mask: 0,
