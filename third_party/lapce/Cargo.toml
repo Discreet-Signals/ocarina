@@ -1,23 +1,24 @@
 [package]
-name         = "ocarina-editor"
+name         = "lapce"
 version      = { workspace = true }
 authors      = { workspace = true }
 edition      = { workspace = true }
 license      = { workspace = true }
 rust-version = { workspace = true }
-default-run  = "ocarina-editor"
+default-run  = "lapce"
 
 [dependencies]
 lapce-app   = { path = "./lapce-app" }
 lapce-proxy = { path = "./lapce-proxy" }
 
+# The Ocarina-branded binary lives at crates/ocarina-editor in the
+# parent workspace, depending on lapce-app via path. The bin entries
+# below are kept identical to upstream Lapce so subtree pulls don't
+# conflict here.
 [[bin]]
-name = "ocarina-editor"
+name = "lapce"
 path = "lapce-app/src/bin/lapce.rs"
 
-# Companion proxy binary for remote development (SSH-based).
-# Internal name kept as `lapce-proxy` because the binary is downloaded
-# by Lapce-protocol clients under that exact filename.
 [[bin]]
 name = "lapce-proxy"
 path = "lapce-proxy/src/bin/lapce-proxy.rs"

@@ -14,7 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 ocarina-schema.workspace = true
 ocarina-core.workspace = true
-ocarina-lsp.workspace = true
+# ocarina-lsp parked during Lapce migration — see lsp_command in src/main.rs
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

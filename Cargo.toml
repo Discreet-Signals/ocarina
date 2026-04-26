@@ -5,11 +5,13 @@ members = ["crates/*", "examples/hello-gameplay"]
 # workspaces. Exclude so `cargo check --workspace` here doesn't pull
 # them in; build them via their own root Cargo.toml.
 #
-# ocarina-editor is the legacy egui-based editor. Excluded during the
-# Lapce migration: egui 0.34 pulls wgpu 29, but Floem (and therefore
-# our shared RHI seam) requires wgpu 27. The editor will be deleted
-# once the Lapce-based editor reaches parity.
-exclude = ["third_party/lapce", "third_party/floem", "crates/ocarina-editor"]
+# ocarina-lsp temporarily excluded: it uses `tower-lsp 0.20` which
+# transitively requires `lsp-types 0.97`, but Lapce (now our editor
+# foundation) pins `lsp-types 0.95` via [patch.crates-io] below.
+# The LSP server architecture is revisited in Phase 2.5 — at which
+# point we'll pick an LSP server crate compatible with Lapce's pins
+# (or roll our own on top of `lsp-server`).
+exclude = ["third_party/lapce", "third_party/floem", "crates/ocarina-lsp"]
 
 [workspace.package]
 edition = "2024"
@@ -64,7 +66,10 @@ raw-window-handle = "0.6"
 rfd = "0.17"
 
 # --- LSP ---
-tower-lsp   = "0.20"
+# tower-lsp parked: pulls lsp-types 0.97 which conflicts with Lapce's
+# lsp-types 0.95 fork. Re-introduce when the LSP server gets rebuilt
+# on a Lapce-compatible substrate.
+# tower-lsp   = "0.20"
 tokio       = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync"] }
 serde_json  = "1"
 
@@ -98,7 +103,8 @@ ocarina-derive    = { path = "crates/ocarina-derive", version = "0.1.0" }
 ocarina-core      = { path = "crates/ocarina-core", version = "0.1.0" }
 ocarina-runtime   = { path = "crates/ocarina-runtime", version = "0.1.0" }
 ocarina-bake      = { path = "crates/ocarina-bake", version = "0.1.0" }
-ocarina-lsp       = { path = "crates/ocarina-lsp", version = "0.1.0" }
+# ocarina-lsp     = { path = "crates/ocarina-lsp", version = "0.1.0" }  # parked during Lapce migration
+
 ocarina-shader    = { path = "crates/ocarina-shader", version = "0.1.0" }
 ocarina-scene     = { path = "crates/ocarina-scene", version = "0.1.0" }
 ocarina-gameplay-api = { path = "crates/ocarina-gameplay-api", version = "0.1.0" }
@@ -115,6 +121,15 @@ must_use_candidate = "allow"
 cast_precision_loss = "allow"
 cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
+
+# Mirror Lapce's [patch.crates-io] verbatim so our workspace resolves
+# the same git-forked versions Lapce's workspace does. Without these,
+# transitive deps (lsp-types especially) resolve to crates.io versions
+# that disagree with Lapce's source code.
+[patch.crates-io]
+lsp-types = { git = "https://github.com/lapce/lsp-types", rev = "feaa1e2ec80975c9dadd400a238ceacf071058e6" }
+regalloc2 = { git = "https://github.com/bytecodealliance/regalloc2", rev = "5d79e12d0a93b10fc181f4da409b4671dd365228" }
+dpi = { git = "https://github.com/rust-windowing/winit", rev = "ee245c569d65fdeacf705ee5eedb564508d10ebe" }
 
 [profile.dev]
 opt-level = 1              # mild opt so editor tools are responsive

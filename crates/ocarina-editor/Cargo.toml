@@ -1,0 +1,23 @@
+[package]
+name = "ocarina-editor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ocarina IDE: file-first game engine editor. Wraps the Lapce fork."
+
+[[bin]]
+name = "ocarina-editor"
+path = "src/main.rs"
+
+[dependencies]
+# The Lapce fork lives in third_party/lapce/ as a git subtree. We
+# depend on its `lapce-app` library via path; cargo follows the path
+# into Lapce's separate workspace and resolves transitive deps from
+# that workspace's Cargo.toml. Our root [patch.crates-io] mirrors
+# Lapce's so version unification produces the same resolutions in
+# both contexts.
+lapce-app = { path = "../../third_party/lapce/lapce-app" }
+
+[lints]
+workspace = true

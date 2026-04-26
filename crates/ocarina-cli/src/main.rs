@@ -93,12 +93,12 @@ fn lsp_command(args: Vec<String>) -> anyhow::Result<()> {
     if !args.is_empty() {
         bail!("`ocarina lsp` takes no arguments (the LSP communicates via stdin/stdout)");
     }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("creating tokio runtime")?;
-    runtime.block_on(ocarina_lsp::run_stdio());
-    Ok(())
+    bail!(
+        "`ocarina lsp` is temporarily disabled during the Lapce migration. \
+         The previous LSP server depended on tower-lsp 0.20 → lsp-types 0.97, \
+         which conflicts with Lapce's lsp-types 0.95 pin. Re-enabled in \
+         Phase 2.5 after rebuilding on a Lapce-compatible LSP substrate."
+    )
 }
 
 // ─────────────────────────── new ────────────────────────────

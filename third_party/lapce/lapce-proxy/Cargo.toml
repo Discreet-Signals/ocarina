@@ -61,8 +61,11 @@ wasmtime-wasi = "14.0.0"
 wasi-common   = "14.0.0"
 
 [dependencies.wasi-experimental-http-wasmtime]
-git = "https://github.com/lapce/wasi-experimental-http"
-# path = "../../wasi-experimental-http/crates/wasi-experimental-http-wasmtime"
+# Vendored under third_party/wasi-experimental-http/ with wasmtime
+# version pinned to "14" (upstream had `*` which breaks fresh resolves
+# now that wasmtime 44 exists). Original source: git fork at
+# https://github.com/lapce/wasi-experimental-http rev 21419eb.
+path = "../../wasi-experimental-http/crates/wasi-experimental-http-wasmtime"
 
 [target.'cfg(target_os = "macos")'.dependencies.locale_config]
 git    = "https://github.com/lapce/locale_config.git"
