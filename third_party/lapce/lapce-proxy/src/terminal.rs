@@ -24,6 +24,41 @@ use polling::PollMode;
 
 const READ_BUFFER_SIZE: usize = 0x10_0000;
 
+/// Zsh init that sources the user's real `~/.zshrc` (so PATH, aliases,
+/// functions, etc. all apply) and then overrides `PROMPT` to a two-line
+/// form: `cwd (git-branch)` on top, `❯ ` below.
+/// `OCARINA_NO_PROMPT_OVERRIDE=1` opts out if the user prefers their own
+/// prompt (e.g. Starship) untouched.
+const OCARINA_ZSHRC: &str = r#"# Ocarina editor override — runs instead of the default
+# ZDOTDIR-less .zshrc when spawned inside the Ocarina terminal pane.
+
+if [ -f "$HOME/.zshrc" ]; then
+    source "$HOME/.zshrc"
+fi
+
+if [ -z "$OCARINA_NO_PROMPT_OVERRIDE" ]; then
+    autoload -Uz colors 2>/dev/null && colors 2>/dev/null
+    autoload -Uz vcs_info 2>/dev/null
+    precmd_ocarina_vcs() { vcs_info 2>/dev/null }
+    autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd precmd_ocarina_vcs 2>/dev/null
+    zstyle ':vcs_info:git:*' formats ' %F{244}(%b)%f' 2>/dev/null
+    setopt PROMPT_SUBST 2>/dev/null
+    PROMPT=$'%F{111}%~%f${vcs_info_msg_0_}\n%F{10}❯%f '
+    RPROMPT=''
+fi
+"#;
+
+/// Write a one-off `.zshrc` into a PID-scoped temp dir and return the
+/// path. Passed to the spawned shell via `ZDOTDIR`; removed on `Drop`.
+fn setup_zdotdir() -> io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("ocarina-zsh-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(".zshrc"), OCARINA_ZSHRC)?;
+    // .zshenv so ZDOTDIR is respected for login shells too.
+    std::fs::write(dir.join(".zshenv"), "")?;
+    Ok(dir)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const PTY_READ_WRITE_TOKEN: usize = 0;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -60,6 +95,8 @@ pub struct Terminal {
     pub(crate) pty: alacritty_terminal::tty::Pty,
     rx: Receiver<Msg>,
     pub tx: Sender<Msg>,
+    /// Temp dir containing our generated `.zshrc`. Cleaned up on Drop.
+    zdotdir: Option<PathBuf>,
 }
 
 impl Terminal {
@@ -71,11 +108,23 @@ impl Terminal {
     ) -> Result<Terminal> {
         let poll = polling::Poller::new()?.into();
 
+        let mut env = profile.environment.clone().unwrap_or_default();
+
+        // Inject the Ocarina zsh override so the user gets a two-line
+        // `cwd` / `❯ ` prompt without touching their real `~/.zshrc`.
+        // Best-effort — fall back to the default prompt if the temp dir
+        // can't be created, and don't overwrite an explicit ZDOTDIR.
+        let zdotdir = setup_zdotdir().ok();
+        if let Some(d) = &zdotdir {
+            env.entry("ZDOTDIR".to_string())
+                .or_insert_with(|| d.to_string_lossy().into_owned());
+        }
+
         let options = Options {
             shell: Terminal::program(&profile),
             working_directory: Terminal::workdir(&profile),
             hold: false,
-            env: profile.environment.unwrap_or_default(),
+            env,
         };
 
         setup_env();
@@ -99,6 +148,7 @@ impl Terminal {
             pty,
             tx,
             rx,
+            zdotdir,
         })
     }
 
@@ -304,6 +354,14 @@ impl Terminal {
             }
         } else {
             None
+        }
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        if let Some(d) = &self.zdotdir {
+            let _ = std::fs::remove_dir_all(d);
         }
     }
 }

@@ -13,7 +13,10 @@ impl Directory {
 
     #[cfg(not(feature = "portable"))]
     fn project_dirs() -> Option<ProjectDirs> {
-        ProjectDirs::from("dev", "lapce", NAME)
+        // Ocarina-branded config/cache dir. Distinct from any system
+        // Lapce install on the user's machine (which uses the
+        // "dev.lapce.Lapce-*" prefix).
+        ProjectDirs::from("io", "ocarina", NAME)
     }
 
     /// Return path adjacent to lapce executable when built as portable

@@ -22,31 +22,24 @@ pub type PanelOrder = im::HashMap<PanelPosition, im::Vector<PanelKind>>;
 
 pub fn default_panel_order() -> PanelOrder {
     let mut order = PanelOrder::new();
+    // Ocarina default layout. PanelKind variants not listed here stay in
+    // the codebase but aren't visible until the user toggles them on
+    // from the command palette / drags them into a position.
     order.insert(
         PanelPosition::LeftTop,
         im::vector![
             PanelKind::FileExplorer,
-            PanelKind::Plugin,
             PanelKind::SourceControl,
-            PanelKind::Debug,
+            PanelKind::Search,
         ],
     );
-    // Ocarina default: viewport occupies the wide bottom area; terminal
-    // moves to the right column.
     order.insert(
         PanelPosition::BottomLeft,
-        im::vector![
-            PanelKind::Viewport,
-            PanelKind::Search,
-            PanelKind::Problem,
-            PanelKind::CallHierarchy,
-            PanelKind::References,
-            PanelKind::Implementation
-        ],
+        im::vector![PanelKind::Viewport],
     );
     order.insert(
         PanelPosition::RightTop,
-        im::vector![PanelKind::Terminal, PanelKind::DocumentSymbol,],
+        im::vector![PanelKind::Terminal],
     );
 
     order

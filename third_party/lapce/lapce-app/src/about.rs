@@ -105,10 +105,14 @@ pub fn about_popup(window_tab_data: Rc<WindowTabData>) -> impl View {
                 s.size(logo_size, logo_size)
                     .color(config.get().color(LapceColor::EDITOR_FOREGROUND))
             }),
-            label(|| "Lapce".to_string()).style(move |s| {
+            label(|| "Ocarina".to_string()).style(move |s| {
                 s.font_bold()
                     .margin_top(10.0)
                     .color(config.get().color(LapceColor::EDITOR_FOREGROUND))
+            }),
+            label(|| "Built on Lapce".to_string()).style(move |s| {
+                s.margin_top(4.0)
+                    .color(config.get().color(LapceColor::EDITOR_DIM))
             }),
             label(|| format!("Version: {}", VERSION)).style(move |s| {
                 s.margin_top(10.0)

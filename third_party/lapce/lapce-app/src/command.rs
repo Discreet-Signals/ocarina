@@ -548,7 +548,7 @@ pub enum LapceWorkbenchCommand {
     RestartToUpdate,
 
     #[strum(serialize = "show_about")]
-    #[strum(message = "About Lapce")]
+    #[strum(message = "About Ocarina")]
     ShowAbout,
 
     #[strum(message = "Save All Files")]

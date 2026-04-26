@@ -426,9 +426,12 @@ pub fn panel_container_view(
         let config = config.get();
         s.apply_if(!panel.is_container_shown(&position, true), |s| s.hide())
             .apply_if(position == PanelContainerPosition::Bottom, |s| {
+                // Ocarina layout: bottom panel sits above the editor, so
+                // the separator is at the bottom of this container
+                // rather than the top.
                 s.width_pct(100.0)
                     .apply_if(!is_maximized, |s| {
-                        s.border_top(1.0).height(size as f32)
+                        s.border_bottom(1.0).height(size as f32)
                     })
                     .apply_if(is_maximized, |s| s.flex_grow(1.0))
             })
@@ -444,7 +447,12 @@ pub fn panel_container_view(
                     .height_pct(100.0)
                     .background(config.color(LapceColor::PANEL_BACKGROUND))
             })
-            .apply_if(!is_bottom, |s| s.flex_col())
+            // All three containers stack their children vertically:
+            //   [picker_first / view_first / view_second / picker_second]
+            // For the Bottom container this means the tab picker is a
+            // horizontal strip at the top of the panel area (Ocarina
+            // default — bottom panel is positioned above the editor).
+            .flex_col()
             .border_color(config.color(LapceColor::LAPCE_BORDER))
             .color(config.color(LapceColor::PANEL_FOREGROUND))
     })
@@ -651,7 +659,9 @@ fn panel_picker(
                 }),
                 |s| s.hide(),
             )
-            .apply_if(is_bottom, |s| s.flex_col())
+            // Picker icons flow horizontally for Bottom (top-of-panel
+            // strip), vertically for Left/Right (sidebar icon column).
+            .apply_if(!is_bottom, |s| s.flex_col())
             .apply_if(is_bottom && is_first, |s| s.border_right(1.0))
             .apply_if(is_bottom && !is_first, |s| s.border_left(1.0))
             .apply_if(!is_bottom && is_first, |s| s.border_bottom(1.0))

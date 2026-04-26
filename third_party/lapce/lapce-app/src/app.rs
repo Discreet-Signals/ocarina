@@ -115,11 +115,11 @@ mod grammars;
 mod logging;
 
 #[derive(Parser)]
-#[clap(name = "Lapce")]
+#[clap(name = "Ocarina")]
 #[clap(version=meta::VERSION)]
 #[derive(Debug)]
 struct Cli {
-    /// Launch new window even if Lapce is already running
+    /// Launch new window even if Ocarina is already running
     #[clap(short, long, action)]
     new: bool,
     /// Don't return instantly when opened in a terminal
@@ -206,7 +206,7 @@ impl AppData {
     fn default_window_config(&self) -> WindowConfig {
         WindowConfig::default()
             .apply_default_theme(false)
-            .title("Lapce")
+            .title("Ocarina")
     }
 
     pub fn new_window(&self, folder: Option<PathBuf>) {
@@ -2188,12 +2188,16 @@ fn workbench(window_tab_data: Rc<WindowTabData>) -> impl View {
         panel_container_view(window_tab_data.clone(), PanelContainerPosition::Left),
         {
             let window_tab_data = window_tab_data.clone();
+            // Ocarina layout: bottom panel ("Viewport") sits ABOVE the
+            // text editor in the central column. The container name
+            // "Bottom" is preserved from upstream Lapce for minimal
+            // rebase delta — the visual position is what we're flipping.
             stack((
-                main_split(window_tab_data.clone()),
                 panel_container_view(
-                    window_tab_data,
+                    window_tab_data.clone(),
                     PanelContainerPosition::Bottom,
                 ),
+                main_split(window_tab_data),
             ))
             .on_resize(move |rect| {
                 let width = rect.size().width;
@@ -3676,8 +3680,8 @@ fn window(window_data: WindowData) -> impl View {
             .or_else(|| window_tabs.last())
             .and_then(|(_, window_tab)| window_tab.workspace.display());
         match workspace {
-            Some(workspace) => format!("{workspace} - Lapce"),
-            None => "Lapce".to_string(),
+            Some(workspace) => format!("{workspace} - Ocarina"),
+            None => "Ocarina".to_string(),
         }
     })
     .on_event_stop(EventListener::ImeEnabled, move |_| {
@@ -3705,7 +3709,7 @@ fn window(window_data: WindowData) -> impl View {
             let lapce_command = window_tab.common.lapce_command;
             window_menu(lapce_command, workbench_command)
         } else {
-            Menu::new("Lapce")
+            Menu::new("Ocarina")
         }
     })
     .style(|s| s.size_full())
@@ -4170,10 +4174,10 @@ pub fn window_menu(
     lapce_command: Listener<LapceCommand>,
     workbench_command: Listener<LapceWorkbenchCommand>,
 ) -> Menu {
-    Menu::new("Lapce")
+    Menu::new("Ocarina")
         .entry({
-            let mut menu = Menu::new("Lapce")
-                .entry(MenuItem::new("About Lapce").action(move || {
+            let mut menu = Menu::new("Ocarina")
+                .entry(MenuItem::new("About Ocarina").action(move || {
                     workbench_command.send(LapceWorkbenchCommand::ShowAbout)
                 }))
                 .separator()
