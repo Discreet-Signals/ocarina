@@ -8,13 +8,13 @@ use std::{
         Arc,
         mpsc::{Sender, channel},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use alacritty_terminal::vte::ansi::Handler;
 use floem::{
     ViewId,
-    action::{TimerToken, open_file, remove_overlay},
+    action::{TimerToken, exec_after, open_file, remove_overlay},
     ext_event::{create_ext_action, create_signal_from_channel},
     file::FileDialogOptions,
     keyboard::Modifiers,
@@ -415,14 +415,18 @@ impl WindowTabData {
             ocarina_selection,
         });
 
-        // If the workspace points at a directory, eagerly load it as
-        // an Ocarina scene. The viewport panel reads from this signal
-        // each frame — None means render an empty viewport.
-        //
-        // Filesystem hot-reload (notify watcher → reapply edits) lands
-        // in a follow-up; v1 is load-once on workspace open.
+        // Load the workspace as an Ocarina scene and start a notify
+        // watcher so edits to entity/component .toml files reflect in
+        // the viewport without restarting the editor. The watcher
+        // runs in its own background thread (notify spawns it) and
+        // pushes coalesced events into a channel; we drain that
+        // channel on a 50 ms timer below and apply each event with
+        // ocarina_scene::loader::*. Scene mutations happen through
+        // the existing `Rc<RefCell<Scene>>` — the SceneSignal value
+        // never changes after the initial set, so the viewport's own
+        // 60 fps repaint loop is what surfaces the reloaded contents.
         if let Some(root) = workspace.path.clone() {
-            let (scene, report) = ocarina_scene::loader::open(root);
+            let (scene, report) = ocarina_scene::loader::open(root.clone());
             tracing::info!(
                 "ocarina-scene loaded: {} entities, {} components, {} errors",
                 scene.entity_count(),
@@ -432,7 +436,17 @@ impl WindowTabData {
             for err in &report.errors {
                 tracing::warn!("ocarina-scene load error: {err}");
             }
-            ocarina_scene.set(Some(Rc::new(RefCell::new(scene))));
+            let scene_rc = Rc::new(RefCell::new(scene));
+            ocarina_scene.set(Some(scene_rc.clone()));
+
+            match ocarina_scene::watcher::SceneWatcher::start(&root) {
+                Ok(watcher) => {
+                    spawn_scene_pump(Rc::new(watcher), scene_rc);
+                }
+                Err(e) => {
+                    tracing::warn!("ocarina-scene watcher start failed: {e}");
+                }
+            }
         }
 
         let main_split = MainSplitData::new(cx, common.clone());
@@ -3066,4 +3080,47 @@ fn open_uri(path: &Path) {
             error!("failed to open active file: {path:?}, error: {e}");
         }
     }
+}
+
+/// Recursively schedule a watcher drain → scene reload pass every
+/// 50 ms. Notify's own thread funnels FS events into the watcher's
+/// channel; we just dequeue here and apply them with the loader.
+///
+/// 50 ms is a balance: short enough that "Save → see it" feels
+/// instant, long enough that a burst of notify events from a single
+/// editor save (often 3–5 fires) coalesces into one drain pass and
+/// thus one scene-reload sequence.
+///
+/// The viewport's own 60 fps repaint loop handles surfacing the
+/// reloaded data — the SceneSignal's value (the `Rc` pointer) doesn't
+/// change here, so we deliberately don't try to "notify" the signal.
+fn spawn_scene_pump(
+    watcher: Rc<ocarina_scene::watcher::SceneWatcher>,
+    scene: Rc<RefCell<ocarina_scene::Scene>>,
+) {
+    use ocarina_scene::watcher::SceneEvent;
+    exec_after(Duration::from_millis(50), move |_| {
+        let events = watcher.drain();
+        if !events.is_empty() {
+            let mut scene_mut = scene.borrow_mut();
+            for ev in events {
+                match ev {
+                    SceneEvent::Changed(p) => {
+                        if let Err(e) =
+                            ocarina_scene::loader::reload_file(&mut scene_mut, &p)
+                        {
+                            tracing::warn!("scene reload {p:?}: {e}");
+                        }
+                    }
+                    SceneEvent::Removed(p) => {
+                        let _ = ocarina_scene::loader::remove_file(&mut scene_mut, &p);
+                    }
+                    SceneEvent::Rescan(_) => {
+                        let _ = ocarina_scene::loader::reload_full(&mut scene_mut);
+                    }
+                }
+            }
+        }
+        spawn_scene_pump(watcher, scene);
+    });
 }

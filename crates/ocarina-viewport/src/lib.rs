@@ -33,11 +33,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use bevy_ecs::entity::Entity;
+use std::time::Duration;
+
 use floem::{
     View,
+    action::exec_after,
     event::{Event, EventListener},
     kurbo::{Point, Rect},
-    reactive::{RwSignal, SignalGet},
+    reactive::{RwSignal, SignalGet, SignalUpdate},
     style::CursorStyle,
     views::{Decorators, canvas},
 };
@@ -91,15 +94,32 @@ pub fn viewport_panel(
 ) -> impl View {
     let state = Rc::new(RefCell::new(PanelState::new()));
 
+    // Drive the viewport at ~60 fps. Floem only repaints a canvas when
+    // a tracked signal it accesses inside `paint` changes — and our
+    // scene/selection signals only mutate on user actions, so without
+    // a continuous tick the panel sits idle. We spin a 16 ms timer that
+    // bumps `frame_tick`, the canvas tracks it, and Floem repaints.
+    //
+    // Filesystem hot-reload also relies on this tick: the scene's
+    // contents mutate through interior mutability (`Rc<RefCell<Scene>>`),
+    // so the signal *value* doesn't change when files reload — only a
+    // continuous repaint surfaces the new state.
+    let frame_tick = RwSignal::new(0u64);
+    spawn_repaint_loop(frame_tick);
+
     canvas({
         let state = state.clone();
         move |cx, size| {
-            // Snapshot reactive state BEFORE the closure (which runs
-            // later, in finish()). The closure owns these values.
-            let scene = scene_signal.get_untracked();
-            let selected_entity = selection_signal
-                .get_untracked()
-                .map(|s| s.entity);
+            // Tracked read: any frame_tick.update() triggers another
+            // paint. The recursive timer below makes that happen at
+            // ~60 fps for as long as the panel exists.
+            frame_tick.get();
+
+            // Tracked reads: when the scene or selection signal value
+            // itself changes (e.g. workspace open swaps in a new Scene
+            // Rc), repaint immediately rather than waiting on the tick.
+            let scene = scene_signal.get();
+            let selected_entity = selection_signal.get().map(|s| s.entity);
 
             let local_rect = Rect::ZERO.with_size(size);
             let state = state.clone();
@@ -163,6 +183,20 @@ pub fn viewport_panel(
             }
         }
     })
+}
+
+/// Recursively schedule a `frame_tick.update(...)` every ~16 ms,
+/// driving canvas repaints at ~60 fps. `exec_after` is one-shot, so
+/// the closure re-arms itself.
+///
+/// When the surrounding scope is disposed (workspace close, app exit)
+/// `frame_tick`'s underlying signal is gone; `update` becomes a no-op
+/// internally, so the chain quietly idles instead of misbehaving.
+fn spawn_repaint_loop(frame_tick: RwSignal<u64>) {
+    exec_after(Duration::from_millis(16), move |_| {
+        frame_tick.update(|v| *v = v.wrapping_add(1));
+        spawn_repaint_loop(frame_tick);
+    });
 }
 
 /// Per-panel mutable state. Cloned-Rc-shared between paint() (which
