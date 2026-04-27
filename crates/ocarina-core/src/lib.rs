@@ -1,7 +1,7 @@
 //! Core math types, built-in components, and the Ocarina prelude.
 //!
 //! `ocarina-core` is consumed by the runtime, the editor, and by every
-//! user gameplay crate. It must stay lightweight — no editor deps, no
+//! user gameplay crate. It must stay lightweight -- no editor deps, no
 //! rendering deps beyond the RHI trait.
 
 pub mod asset;

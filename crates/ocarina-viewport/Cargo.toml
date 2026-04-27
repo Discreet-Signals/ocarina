@@ -19,6 +19,20 @@ ocarina-rhi.workspace = true
 ocarina-rhi-wgpu.workspace = true
 ocarina-scene.workspace = true
 ocarina-core.workspace = true
+# Shared rendering core (lit pipeline + mesh registry + UBO formats).
+# `editor` feature on: enables wireframe alt pipeline + unlit
+# variant + RenderConfig toggle struct. The runtime crate never
+# enables this feature so the shipped binary stays lean.
+ocarina-render = { workspace = true, default-features = false, features = ["obj", "editor"] }
+# Linking ocarina-physics here brings the Collider / RigidBody /
+# Velocity inventory submissions into the editor binary. Without it,
+# the scene loader rejects `[collider]` / `[rigid_body]` and the
+# surrounding entity loses its Transform too — entities silently
+# disappear from the viewport.
+#
+# `default-features = false` skips rapier; the editor doesn't need
+# the solver until "play in editor" lands, just the component types.
+ocarina-physics.workspace = true
 
 bevy_ecs.workspace = true
 glam.workspace = true

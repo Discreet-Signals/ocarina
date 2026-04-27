@@ -1,4 +1,4 @@
-//! [`Scene`] — holds the ECS world + bookkeeping for which files own
+//! [`Scene`] -- holds the ECS world + bookkeeping for which files own
 //! which entities.
 
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ impl Scene {
     /// The path is canonicalized so every internal key (entries in
     /// `dir_entity` / `file_entity`) is absolute. This is required for
     /// consistency with `notify` watcher events, which always come back
-    /// as absolute canonical paths — without this normalization, a
+    /// as absolute canonical paths -- without this normalization, a
     /// project opened by a relative path would hot-reload into a
     /// parallel set of entities (one per path form) and you'd see
     /// duplicate meshes in the viewport.
@@ -290,7 +290,7 @@ mod tests {
         let (mut scene, parent_entity, _) = make_scene_with_two_levels();
         let parent_of_parent = scene.parent_world(parent_entity);
         // parent of "/root/parent" is the root entity, which has no
-        // Transform — so its world matrix is identity.
+        // Transform -- so its world matrix is identity.
         assert_eq!(parent_of_parent, Mat4::IDENTITY);
     }
 

@@ -11,23 +11,33 @@ ocarina-rhi.workspace = true
 ocarina-core.workspace = true
 ocarina-scene.workspace = true
 ocarina-gameplay-api.workspace = true
+ocarina-physics = { workspace = true, features = ["solver"] }
 bevy_ecs.workspace = true
 bincode.workspace = true
 log.workspace = true
 glam.workspace = true
 
-# Windowed mode (winit + wgpu + render loop). Optional so headless
-# users — tests, the editor's in-process tick loop, CI smokes —
-# don't pay the cost of pulling in winit/wgpu.
-winit      = { workspace = true, optional = true }
-wgpu       = { workspace = true, optional = true }
-pollster   = { workspace = true, optional = true }
-bytemuck   = { workspace = true, optional = true }
-anyhow     = { workspace = true, optional = true }
+# Windowed mode pulls in: a winit window, a concrete RHI backend
+# (`ocarina-rhi-wgpu` for now; swap for a future Vulkan backend by
+# changing this dep), and `ocarina-render` for the lit pipeline +
+# mesh registry. The runtime never enables ocarina-render's
+# `editor` feature so wireframe / unlit / RenderConfig machinery is
+# stripped at compile time.
+winit            = { workspace = true, optional = true }
+ocarina-rhi-wgpu = { workspace = true, optional = true }
+ocarina-render   = { workspace = true, optional = true, default-features = false, features = ["obj"] }
+anyhow           = { workspace = true, optional = true }
+bytemuck         = { workspace = true, optional = true }
 
 [features]
 default = []
-windowed = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:anyhow"]
+windowed = [
+    "dep:winit",
+    "dep:ocarina-rhi-wgpu",
+    "dep:ocarina-render",
+    "dep:anyhow",
+    "dep:bytemuck",
+]
 
 [lints]
 workspace = true

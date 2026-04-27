@@ -13,7 +13,7 @@
 //!     hitbox/
 //!       hitbox.toml      [transform]
 //!   cave/
-//!     cave.toml          [transform] [basic_mesh]
+//!     cave.toml          [transform] [mesh] [material]
 //! ```
 //!
 //! [`Scene`] owns a `bevy_ecs::World` plus a map from filesystem paths

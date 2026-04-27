@@ -1,0 +1,34 @@
+[package]
+name = "ocarina-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shared rendering core for Ocarina: lit pipeline, mesh registry (built-in primitives + OBJ), camera/instance UBO formats. RHI-backed (no direct wgpu calls). Editor-only features (wireframe, unlit, custom-shader hooks) live behind the `editor` feature so the runtime binary contains only the runtime path."
+
+[dependencies]
+ocarina-rhi.workspace = true
+ocarina-core.workspace = true
+ocarina-shader.workspace = true
+
+glam.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+
+# OBJ asset loader. Optional; the engine's built-in Box / Sphere
+# meshes are always available even without this feature.
+tobj = { workspace = true, optional = true }
+
+[features]
+# `obj` is on by default because the user-facing model is "drop a
+# .obj into your project, reference it from Mesh.source."
+default = ["obj"]
+obj = ["dep:tobj"]
+# Editor-only feature gate. Wireframe pipeline, unlit shader,
+# RenderConfig toggles, custom-shader hot path. The runtime binary
+# builds with this OFF and the entire editor render-path machinery
+# is `cfg`-gated out: zero pipelines, zero fields, zero branches.
+editor = []
+
+[lints]
+workspace = true

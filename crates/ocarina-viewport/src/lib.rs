@@ -35,6 +35,15 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+// Force-link ocarina-physics so its `#[derive(Component)]`
+// submissions (Collider / RigidBody / Velocity) reach the linker's
+// inventory section. Without this `use`, the editor binary that
+// pulls ocarina-viewport in would still see no physics components
+// registered — the loader would reject `[collider]` / `[rigid_body]`
+// sections and the surrounding entity would lose its Transform and
+// vanish from the viewport.
+use ocarina_physics as _;
+
 use bevy_ecs::entity::Entity;
 use floem::{
     View,
@@ -47,7 +56,7 @@ use floem::{
 };
 use floem_renderer::WgpuPassCtx;
 use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
-use ocarina_core::components::{BasicMesh, Transform};
+use ocarina_core::components::{Material, Mesh, Transform};
 use ocarina_scene::Scene;
 
 pub use camera::OrbitCamera;
@@ -435,6 +444,10 @@ struct PanelState {
     /// continuous camera movement (FPS-style: hold to move, release
     /// to stop, multiple held simultaneously sum into one direction).
     held_keys: HeldKeys,
+    /// Editor render toggles (wireframe, lighting, custom shaders).
+    /// Defaults to "everything looks like the shipped game"; the
+    /// editor surfaces UI to flip individual flags.
+    render_config: ocarina_render::editor::RenderConfig,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -464,6 +477,7 @@ impl PanelState {
             dragged: false,
             gizmo_drag: None,
             held_keys: HeldKeys::default(),
+            render_config: ocarina_render::editor::RenderConfig::default(),
         }
     }
 
@@ -503,18 +517,25 @@ impl PanelState {
         // Build entity instance list + gizmo overlay (if anything is
         // selected and resolvable). Both walk `world_transforms`, so
         // we share the borrow.
-        let (entities, gizmo_origin) = scene
+        let (entities, gizmo_origin, project_root) = scene
             .map(|scene| {
                 let mut scene = scene.borrow_mut();
                 let xforms = scene.world_transforms();
                 let origin = selected_entity
                     .and_then(|e| xforms.get(&e).copied())
                     .map(|m| m.w_axis.truncate());
+                let project_root = scene.root_dir.clone();
                 let world = &mut scene.world;
                 let entities = build_entity_instances_from(&xforms, world);
-                (entities, origin)
+                (entities, origin, Some(project_root))
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| (Vec::new(), None, None));
+
+        // Keep the mesh registry's project root in sync with the
+        // current scene so user OBJs resolve to the right files.
+        if let Some(root) = project_root {
+            renderer.set_project_root(root);
+        }
 
         // View-projection from the orbit camera, aspect from the
         // panel rect (which `WgpuPassCtx::rect` carries in pixels).
@@ -529,7 +550,7 @@ impl PanelState {
         });
 
         let mode = RenderMode::Edit { selected_entity };
-        renderer.render(&entities, ctx, camera, mode, gizmo);
+        renderer.render(&entities, ctx, camera, mode, gizmo, self.render_config);
     }
 }
 
@@ -789,13 +810,15 @@ fn ray_aabb(ray_origin: Vec3, ray_dir: Vec3, min: Vec3, max: Vec3) -> Option<f32
 
 /// Walk the scene's entities (folding parent transforms via
 /// `Scene::world_transforms`), pair each with a renderer-friendly
-/// `EntityInstance`. Entities with a `BasicMesh` carry the mesh's
-/// tint; meshless ones get the default neutral grey.
+/// `EntityInstance`. The instance's `mesh` field is `None` for
+/// entities that have no `Mesh` component (cameras, audio
+/// listeners): the renderer skips them in the lit pass and (in the
+/// editor) draws a small selection marker if they're selected.
 ///
-/// Takes the precomputed `world_xforms` map + a `&World` because the
-/// caller (render_frame) needs the same map for gizmo-origin lookup,
-/// and `Scene::world_transforms` would otherwise be called twice and
-/// require &mut Scene each time.
+/// Takes the precomputed `world_xforms` map + a `&World` because
+/// the caller (render_frame) needs the same map for gizmo-origin
+/// lookup, and `Scene::world_transforms` would otherwise be called
+/// twice and require &mut Scene each time.
 fn build_entity_instances_from(
     world_xforms: &std::collections::HashMap<Entity, Mat4>,
     world: &bevy_ecs::world::World,
@@ -804,13 +827,16 @@ fn build_entity_instances_from(
 
     let mut instances = Vec::with_capacity(world_xforms.len());
     for (entity, world_xform) in world_xforms {
-        let tint = world
-            .get::<BasicMesh>(*entity)
-            .map_or(DEFAULT_TINT, |m| m.tint);
+        let mesh_path = world
+            .get::<Mesh>(*entity)
+            .map(|m| m.source.clone())
+            .filter(|p| !p.is_empty());
+        let tint = world.get::<Material>(*entity).map_or(DEFAULT_TINT, |m| m.tint);
         instances.push(EntityInstance {
             entity: *entity,
             world_xform: *world_xform,
             tint,
+            mesh: mesh_path,
         });
     }
     instances.sort_by_key(|i| i.entity);

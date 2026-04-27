@@ -1,4 +1,4 @@
-//! `#[derive(Component)]` — one derive that produces:
+//! `#[derive(Component)]` -- one derive that produces:
 //!
 //! 1. An `impl bevy_ecs::component::Component` for the struct.
 //! 2. A `ComponentRegistration` submitted to `ocarina_schema`'s inventory,
@@ -8,7 +8,7 @@
 //!    and attaches it to an entity.
 //!
 //! The schema is the source of truth for the LSP, the editor's lens
-//! panel, and the `ocarina schema` JSON emitter. Users don't write it —
+//! panel, and the `ocarina schema` JSON emitter. Users don't write it --
 //! it's generated from their struct definition + doc comments +
 //! `#[ocarina(...)]` field attributes.
 
@@ -25,7 +25,7 @@ use syn::{
 ///
 /// Accepted field-level attributes:
 /// - `#[ocarina(widget = "vec3" | "color" | "euler_rotation" | "scalar" | "path")]`
-/// - `#[ocarina(default = "[1.0, 1.0, 1.0]")]` — verbatim TOML literal
+/// - `#[ocarina(default = "[1.0, 1.0, 1.0]")]` -- verbatim TOML literal
 /// - `#[ocarina(name = "custom_section_name")]` on the struct to override
 ///   the derived snake_case section name.
 #[proc_macro_derive(Component, attributes(ocarina))]
@@ -37,7 +37,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[derive(OcarinaScript)]` — register a script struct so the
+/// `#[derive(OcarinaScript)]` -- register a script struct so the
 /// runtime can attach it to entities whose `[script]` references the
 /// matching project-relative path.
 ///
@@ -45,7 +45,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 /// - `#[ocarina_script(path = "scripts/my_script.rs")]`
 ///
 /// The struct must implement `Script` (defined in
-/// `ocarina-gameplay-api`) and `Default` — the registry calls
+/// `ocarina-gameplay-api`) and `Default` -- the registry calls
 /// `Self::default()` to construct each instance.
 #[proc_macro_derive(OcarinaScript, attributes(ocarina_script))]
 pub fn derive_ocarina_script(input: TokenStream) -> TokenStream {
@@ -179,14 +179,14 @@ fn emit_output(
     let loader_load_fn = format_ident!("__ocarina_load_{}", struct_name.to_string().to_lowercase());
 
     quote! {
-        // bevy_ecs Component impl — a simple Table-storage mutable component.
+        // bevy_ecs Component impl -- a simple Table-storage mutable component.
         impl ::bevy_ecs::component::Component for #struct_name {
             const STORAGE_TYPE: ::bevy_ecs::component::StorageType =
                 ::bevy_ecs::component::StorageType::Table;
             type Mutability = ::bevy_ecs::component::Mutable;
         }
 
-        // Schema-building fn — invoked lazily by consumers (LSP, schema dump).
+        // Schema-building fn -- invoked lazily by consumers (LSP, schema dump).
         // `file!()` and `line!()` evaluate at the macro call site, which is
         // wherever the user wrote `#[derive(Component)]`. Combined with the
         // captured workspace root we get an absolute path.
@@ -214,7 +214,7 @@ fn emit_output(
             }
         }
 
-        // Loader — type-erased TOML-value → entity insertion.
+        // Loader -- type-erased TOML-value → entity insertion.
         #[allow(non_snake_case)]
         fn #loader_load_fn(
             entity: &mut ::bevy_ecs::world::EntityWorldMut<'_>,
@@ -373,7 +373,7 @@ fn type_to_string(ty: &Type) -> String {
     quote!(#ty).to_string().replace(' ', "")
 }
 
-/// Map a Rust type to a `FieldType` variant name. Conservative — unknown
+/// Map a Rust type to a `FieldType` variant name. Conservative -- unknown
 /// types fall through to `Other`, which is still fine for the schema.
 fn infer_field_type(ty: &Type) -> String {
     let name = type_to_string(ty);
@@ -422,9 +422,9 @@ mod tests {
     fn snake_case_basics() {
         assert_eq!(to_snake_case("Transform"), "transform");
         assert_eq!(to_snake_case("CharacterController"), "character_controller");
-        assert_eq!(to_snake_case("BasicMesh"), "basic_mesh");
+        assert_eq!(to_snake_case("MyAwesomeThing"), "my_awesome_thing");
         assert_eq!(to_snake_case("Single"), "single");
-        // Consecutive uppercase runs are lowercased without a split —
+        // Consecutive uppercase runs are lowercased without a split --
         // simple behavior matching what most codebases actually name
         // things. Users who want a custom TOML section name can pass
         // `#[ocarina(name = "...")]`.

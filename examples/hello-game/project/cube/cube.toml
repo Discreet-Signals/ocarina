@@ -1,15 +1,36 @@
 [transform]
-position = [0.0, 0.0, 0.0]
+position = [0.0, 0.51, 0.0]
 rotation = [0.0, 0.0, 0.0]
-scale    = [1.0, 1.0, 1.0]
+scale = [1.0, 1.0, 1.0]
 
 [name]
 value = "cube"
 
-[basic_mesh]
-source  = "assets/cube.obj"
+[mesh]
+source = "engine/cube"
+
+[material]
 texture = "assets/cube_diffuse.png"
 tint    = [1.0, 0.85, 0.3, 1.0]
 
+# Physics: a 1×1×1 dynamic body the controller drives.
+# X/Z rotation are locked so the cube never tips over, but Y rotation
+# stays free -- the controller drives it via mouse-X for yaw turning.
+[collider]
+shape    = "box"
+size     = [1.0, 1.0, 1.0]
+friction = 0.4
+
+[rigid_body]
+kind            = "dynamic"
+mass            = 1.0
+lock_rotation_x = true
+lock_rotation_z = true
+
+# Velocity must be present so the controller has somewhere to write.
+# Initial values default to zero.
+[velocity]
+
+# WASD + Space character controller. See `scripts/controller.rs`.
 [[script]]
-path = "scripts/spinner.rs"
+path = "scripts/controller.rs"

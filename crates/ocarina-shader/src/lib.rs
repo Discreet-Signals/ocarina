@@ -22,7 +22,7 @@ pub enum ShaderError {
     #[error("HLSL compile failed:\n{0}")]
     CompileFailed(String),
 
-    /// SPIR-V output was not 4-byte-aligned — should never happen for a
+    /// SPIR-V output was not 4-byte-aligned -- should never happen for a
     /// successful DXC compile and indicates a toolchain bug.
     #[error("SPIR-V output has invalid size ({0} bytes; not 4-byte aligned)")]
     InvalidSpirv(usize),
@@ -85,7 +85,7 @@ pub fn compile_hlsl_to_spirv(
 #[must_use]
 pub fn dxc_available() -> bool {
     // `Dxc::new(None)` tries to locate and load the dynamic library. Dropping
-    // it immediately is fine — we just want to know if the load succeeded.
+    // it immediately is fine -- we just want to know if the load succeeded.
     hassle_rs::Dxc::new(None).is_ok()
 }
 

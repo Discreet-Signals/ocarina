@@ -1,7 +1,7 @@
 //! Manual TOML loader for `[[script]]` array-of-tables.
 //!
 //! `Scripts` doesn't go through `#[derive(Component)]` because its
-//! authored form is an *array* of tables, not a single table — every
+//! authored form is an *array* of tables, not a single table -- every
 //! other component is one `[section]` keyed on a snake_case name and
 //! deserialised straight into the struct. We register the loader
 //! by hand here, scoped to the section name `"script"`, so the
@@ -19,7 +19,7 @@ fn load_scripts(
     value: &schema_toml::Value,
 ) -> Result<(), String> {
     // `[[script]]` parses as a top-level array of tables. The loader
-    // also accepts a single table for ergonomics — equivalent to one
+    // also accepts a single table for ergonomics -- equivalent to one
     // `[[script]]` entry.
     let items: Vec<ScriptRef> = match value {
         schema_toml::Value::Array(arr) => arr

@@ -3,10 +3,10 @@
 //! Subcommands:
 //! - `ocarina --version` / `-V`
 //! - `ocarina schema [--output <path>] [--compact]`
-//! - `ocarina lsp` — start an LSP server bound to stdin/stdout.
-//! - `ocarina new component <Name>` — scaffold a new component file.
-//! - `ocarina bake <project> [-o <output>]` — produce a runtime archive.
-//! - `ocarina run <project> [--frames N] [--rate Hz]` — run the game
+//! - `ocarina lsp` -- start an LSP server bound to stdin/stdout.
+//! - `ocarina new component <Name>` -- scaffold a new component file.
+//! - `ocarina bake <project> [-o <output>]` -- produce a runtime archive.
+//! - `ocarina run <project> [--frames N] [--rate Hz]` -- run the game
 //!   headlessly (no rendering, just script ticks). Useful for smoke
 //!   tests and CI.
 
@@ -15,10 +15,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context};
 
-// Pull in `ocarina_core` so its `#[derive(Component)]` submissions reach
-// the inventory linker. Without this `use`, the schema dump and the LSP
-// (when running stand-alone) would see zero registered components.
+// Pull in `ocarina_core` and `ocarina_physics` so their
+// `#[derive(Component)]` submissions reach the inventory linker.
+// Without these `use`s, the schema dump and the LSP would see zero
+// registered components from those crates.
 use ocarina_core as _;
+use ocarina_physics as _;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -187,14 +189,14 @@ fn build_command(args: Vec<String>) -> anyhow::Result<()> {
         .canonicalize()
         .with_context(|| format!("canonicalize {}", project.display()))?;
 
-    // The project root must be a Cargo crate (or workspace) — that's
+    // The project root must be a Cargo crate (or workspace) -- that's
     // the static-link template the binary lives in. We don't generate
     // one here; `ocarina new project` (Phase 6+ work) will scaffold
     // one. For now we delegate straight to cargo.
     let cargo_toml = project.join("Cargo.toml");
     if !cargo_toml.exists() {
         bail!(
-            "no Cargo.toml at {} — `ocarina build` expects the project root to be a Cargo crate \
+            "no Cargo.toml at {} -- `ocarina build` expects the project root to be a Cargo crate \
              (binary that links ocarina-runtime + your scripts). Run `ocarina new project <name>` \
              once that scaffolding lands, or hand-roll one for now.",
             project.display()
@@ -417,7 +419,7 @@ fn scaffold_component(name: &str) -> anyhow::Result<()> {
         .with_context(|| format!("writing {}", target.display()))?;
 
     // Best-effort: append a `pub mod {snake};` line to mod.rs if the
-    // user already has one. Don't create one if it doesn't exist —
+    // user already has one. Don't create one if it doesn't exist --
     // every project's module layout is different, and we'd rather not
     // surprise the user with a new file.
     let mod_rs = target_dir.join("mod.rs");

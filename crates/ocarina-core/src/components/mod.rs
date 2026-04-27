@@ -55,41 +55,70 @@ impl Default for Transform {
 }
 
 impl Transform {
-    /// Build the model matrix for this transform: `T·R·S` with rotation
-    /// taken as Euler angles in degrees, applied XYZ. Used by every
-    /// system that needs a 4x4 (renderer, picking, hierarchy compose).
+    /// Build the model matrix for this transform: T*R*S with rotation
+    /// taken as Euler angles in degrees, applied YXZ (yaw, pitch,
+    /// roll order). YXZ keeps yaw (Y) as the first axis, so it stays
+    /// in the full [-180, 180] degree range without the asin-clamp
+    /// flip that XYZ exhibits past 90 degrees of yaw. This matters
+    /// for character controllers that read rotation.y back to compute
+    /// movement direction.
     #[must_use]
     pub fn matrix(&self) -> Mat4 {
         let rot = Quat::from_euler(
-            glam::EulerRot::XYZ,
-            self.rotation.x.to_radians(),
+            glam::EulerRot::YXZ,
             self.rotation.y.to_radians(),
+            self.rotation.x.to_radians(),
             self.rotation.z.to_radians(),
         );
         Mat4::from_scale_rotation_translation(self.scale, rot, self.position)
     }
 }
 
-/// A mesh to render at this entity's transform.
+/// Geometry attached to an entity. One job: name an asset to draw.
+/// Surface properties (texture, tint, future shader) live on
+/// [`Material`].
 ///
-/// `source` is a project-relative path to a mesh file. Phase 6's bake
-/// pipeline will resolve this into a GPU-ready vertex buffer; in the
-/// editor it's used to preview the mesh when the entity is selected.
-#[derive(Component, Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BasicMesh {
-    /// Path to the mesh file, relative to the project root.
+/// `source` is an asset path. The mesh loader recognises three
+/// shapes:
+///
+/// - `"engine/cube"`, `"engine/sphere"`, ...: reserved prefix for
+///   built-in meshes baked into the engine binary. Available
+///   without the project shipping any geometry of its own.
+/// - `"assets/wood.obj"` (or any project-relative path): loaded
+///   from the project folder via the OBJ loader.
+/// - `""` (empty): no mesh, the entity does not render. Equivalent
+///   to omitting the `[mesh]` section entirely; explicit empty is
+///   provided for entities that want to toggle visibility from a
+///   script without losing their authored path.
+#[derive(Component, Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Mesh {
     #[serde(default)]
     pub source: AssetPath,
+}
 
-    /// Path to the diffuse texture, relative to the project root.
-    /// Empty means "no texture" — fall back to flat-shaded `tint`.
+/// Surface appearance for an entity that has a [`Mesh`]. Optional;
+/// missing material means "neutral grey, no texture, default lit
+/// shading." The shader path lands here when custom shaders ship.
+#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+pub struct Material {
+    /// Diffuse texture, project-relative. Empty means "no texture":
+    /// fall back to flat-shaded `tint`.
     #[serde(default)]
     pub texture: AssetPath,
 
-    /// Optional base color tint. RGBA 0..1.
+    /// Base color tint, RGBA in 0..1.
     #[ocarina(widget = "color", default = "[1.0, 1.0, 1.0, 1.0]")]
     #[serde(default = "white_vec4")]
     pub tint: Vec4,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            texture: AssetPath::default(),
+            tint: white_vec4(),
+        }
+    }
 }
 
 fn white_vec4() -> Vec4 {
@@ -159,7 +188,7 @@ pub struct ScriptRef {
 /// the runtime can construct + tick each one in order.
 ///
 /// The scene loader treats `script` as a special section that expects
-/// an array of tables — see the manual loader registration in
+/// an array of tables -- see the manual loader registration in
 /// `ocarina-core/src/components/script.rs`.
 #[derive(bevy_ecs::component::Component, Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Scripts {

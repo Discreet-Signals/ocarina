@@ -8,6 +8,8 @@ position = [0.0, -0.2498999983072281, 1.0]
 rotation = [0.0, 0.0, 0.0]
 scale = [20.0, 0.5, 20.0]
 
-[basic_mesh]
+[mesh]
 source = "meshes/cave.obj"
+
+[material]
 tint = [0.0, 0.6, 0.1, 1.0]

@@ -81,7 +81,7 @@ impl<'a> Context<'a> {
     }
 
     /// Mutably borrow a component on `entity`. Triggers change
-    /// detection just by being called — same semantics as
+    /// detection just by being called -- same semantics as
     /// `World::get_mut`.
     pub fn get_mut<T>(&mut self, entity: Entity) -> Option<bevy_ecs::change_detection::Mut<'_, T>>
     where
@@ -122,7 +122,7 @@ impl<'a> Context<'a> {
 /// these via `inventory::submit!`. The runtime picks them up and maps
 /// `[script] path = "..."` references to the right constructor.
 pub struct ScriptRegistration {
-    /// Project-relative path the `[script]` TOML field references —
+    /// Project-relative path the `[script]` TOML field references --
     /// e.g. `"scripts/spinner.rs"`. Match is exact.
     pub path: &'static str,
     /// Fully qualified Rust type path (informational; surfaced in
@@ -152,4 +152,5 @@ pub fn find_script(path: &str) -> Option<&'static ScriptRegistration> {
 // Gameplay code that writes `use ocarina_gameplay_api::*;` should be
 // able to reach the most common engine types without a second `use`.
 
-pub use ocarina_core::components::{BasicMesh, Camera, Name, Transform};
+pub use ocarina_core::components::{Camera, Material, Mesh, Name, Transform};
+pub use ocarina_core::math::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};

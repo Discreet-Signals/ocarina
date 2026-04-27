@@ -13,6 +13,11 @@ path = "src/main.rs"
 ocarina-core         = { path = "../../crates/ocarina-core" }
 ocarina-runtime      = { path = "../../crates/ocarina-runtime", features = ["windowed"] }
 ocarina-gameplay-api = { path = "../../crates/ocarina-gameplay-api" }
+# Linking ocarina-physics is what registers Collider / RigidBody /
+# Velocity in this binary's inventory section. Without this,
+# `[collider]` / `[rigid_body]` sections in TOML would be reported
+# as unknown components by the loader.
+ocarina-physics      = { path = "../../crates/ocarina-physics" }
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"

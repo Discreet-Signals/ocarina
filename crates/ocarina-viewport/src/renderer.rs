@@ -17,10 +17,15 @@
 //! Metal / D3D12 backend slots in without changing this file.
 
 use bevy_ecs::entity::Entity;
-use bytemuck::{Pod, Zeroable};
 use floem_renderer::WgpuPassCtx;
 use glam::{Mat4, Vec3, Vec4};
 
+use ocarina_core::AssetPath;
+use ocarina_render::editor::{EditorPipelines, RenderConfig};
+use ocarina_render::{
+    CameraUniform, InstanceUniform, LitPipeline, MeshHandle, MeshRegistry, ENGINE_SPHERE,
+    INSTANCE_STRIDE, MAX_INSTANCES,
+};
 use ocarina_rhi::{
     BindGroupDesc, BindGroupEntry, BindGroupHandle, BindGroupLayoutDesc, BindGroupLayoutEntry,
     BindGroupLayoutHandle, BindingResource, BindingType, BlendState, BufferDesc, BufferHandle,
@@ -34,45 +39,23 @@ use ocarina_rhi::{
 };
 use ocarina_rhi_wgpu::WgpuRhi;
 
-use crate::mesh::{self, Vertex};
+use crate::mesh;
 
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 /// Single-channel format for the selection mask. R8Unorm gives 1 byte
 /// per pixel and reads back through a Float texture binding, so the
 /// outline post-process can sample it directly.
 const MASK_FORMAT: TextureFormat = TextureFormat::R8Unorm;
-const LIT_WGSL: &str = include_str!("../shaders/lit.wgsl");
 const MASK_WGSL: &str = include_str!("../shaders/mask.wgsl");
 const OUTLINE_POST_WGSL: &str = include_str!("../shaders/outline_post.wgsl");
 const GIZMO_2D_WGSL: &str = include_str!("../shaders/gizmo_2d.wgsl");
 
-/// std140-laid-out camera UBO consumed by `lit.wgsl` (and friends).
-/// `viewport_size` is the **panel rect's** pixel extent (not the
-/// swapchain) because `set_viewport(...)` maps NDC `[-1, 1]` to the
-/// panel area, so the 2D gizmo shader needs panel dimensions to
-/// convert pixel offsets to NDC correctly. Other shaders declare
-/// the field for layout compatibility but ignore it.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct CameraUniform {
-    view_proj: Mat4,
-    light_dir: Vec4,
-    base_color: Vec4,
-    viewport_size: Vec4,
-}
-const CAMERA_UNIFORM_SIZE: u64 = std::mem::size_of::<CameraUniform>() as u64;
-
-/// Per-instance UBO at bind group 1, dynamic-offset-stepped through a
-/// single buffer of length `INSTANCE_STRIDE * MAX_INSTANCES`.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct InstanceUniform {
-    model: Mat4,
-    tint: Vec4,
-}
+// CameraUniform / InstanceUniform / INSTANCE_STRIDE / MAX_INSTANCES
+// come from `ocarina_render`. The camera UBO carries a
+// `viewport_size: Vec4` field used by the 2D gizmo shader to convert
+// pixel offsets to NDC; the lit and unlit shaders declare it for
+// layout compatibility and ignore it.
 const INSTANCE_UNIFORM_SIZE: u64 = std::mem::size_of::<InstanceUniform>() as u64;
-const INSTANCE_STRIDE: u64 = 256;
-const MAX_INSTANCES: u32 = 1024;
 
 /// Camera state ready to upload to the GPU. Computed by the caller —
 /// the renderer doesn't know about orbit cameras (editor) vs gameplay
@@ -111,7 +94,7 @@ pub enum RenderMode {
 /// One renderable entity. The caller is responsible for resolving
 /// world transforms (folding parent transforms in the editor case;
 /// reading from the runtime's transform system in the play case).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EntityInstance {
     pub entity: Entity,
     pub world_xform: Mat4,
@@ -119,6 +102,11 @@ pub struct EntityInstance {
     /// boost (in edit mode). Pass `Vec4::new(0.78, 0.82, 0.90, 1.0)`
     /// for the default "neutral cool grey" Ocarina aesthetic.
     pub tint: Vec4,
+    /// Asset path of the entity's mesh. `None` means the entity has
+    /// no `Mesh` component (e.g. a camera) and isn't drawn in the
+    /// lit pass; the editor may still surface a small selection
+    /// marker for it.
+    pub mesh: Option<ocarina_core::AssetPath>,
 }
 
 /// Editor overlay: translate **and** rotate gizmo handles to draw at
@@ -140,33 +128,36 @@ pub struct GizmoOverlay {
 pub struct ViewportRenderer {
     rhi: WgpuRhi,
 
-    pipeline: PipelineHandle,
+    /// Lit pipeline + camera/instance UBOs + bind groups, owned by
+    /// the shared rendering core. Used for normal lit draws.
+    lit: LitPipeline,
+    /// Editor-only alt pipelines (wireframe + unlit). Selected via
+    /// [`RenderConfig`] passed to `render()`. Compiled in here
+    /// because viewport always builds with ocarina-render's
+    /// `editor` feature on.
+    editor_pipelines: EditorPipelines,
+    /// Shared mesh registry. Built-in `engine/cube`, `engine/sphere`
+    /// pre-loaded; user OBJs cached on first reference. Same handle
+    /// type the runtime uses, same loading path.
+    meshes: MeshRegistry,
+
     /// Mask pipeline. Re-renders the selected mesh through the
-    /// `mask.wgsl` shader (uses the same vertex layout + camera /
-    /// instance UBOs as the lit pipeline) into a single-channel
-    /// R8Unorm texture, writing 1.0 inside the silhouette and
-    /// leaving 0.0 outside. Read by the outline post-process.
+    /// `mask.wgsl` shader into a single-channel R8Unorm texture
+    /// (1.0 inside the silhouette, 0.0 outside). Reads camera /
+    /// instance UBOs from `lit`'s bind groups.
     mask_pipeline: PipelineHandle,
-    /// Post-process pipeline that draws a fullscreen quad over the
-    /// swapchain, samples the mask + 4 neighbors, and emits the
-    /// outline color where the mask transitions across the kernel.
+    /// Post-process pipeline. Fullscreen quad, samples the mask +
+    /// 4 neighbors, emits outline color where the mask transitions.
     outline_pipeline: PipelineHandle,
-    /// Gizmo pipeline. Same lit shader as the main pipeline, but
-    /// `depth_compare = Always` and `depth_write_enabled = false` so
-    /// the translate / rotate handles render on top of the scene
-    /// regardless of where they sit in 3D — clicking a handle
-    /// shouldn't depend on whether it's poking through a mesh.
+    /// Gizmo pipeline. Same lit shader as the main pipeline but
+    /// `depth_compare = Always`, `depth_write_enabled = false` so
+    /// translate / rotate handles render on top regardless of 3D
+    /// occlusion (you should be able to grab a handle even when it
+    /// pokes through a mesh).
     gizmo_pipeline: PipelineHandle,
-    camera_bg: BindGroupHandle,
-    instance_bg: BindGroupHandle,
-    camera_buffer: BufferHandle,
-    instance_buffer: BufferHandle,
-    cube_vb: BufferHandle,
-    cube_ib: BufferHandle,
-    cube_index_count: u32,
     /// Translate-axis line+arrow mesh in the *gizmo* vertex format
     /// (`mesh::GizmoVertex`). Different vertex layout from the lit
-    /// cube — needs its own pipeline.
+    /// pipeline; needs its own pipeline.
     translate_axis_vb: BufferHandle,
     translate_axis_ib: BufferHandle,
     translate_axis_index_count: u32,
@@ -211,75 +202,26 @@ impl ViewportRenderer {
         let target_format = wgpu_format_to_rhi(format)?;
         let mut rhi = WgpuRhi::from_existing(device, queue, adapter);
 
-        // Bind group 0: camera UBO.
-        let camera_bgl = rhi.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Some("camera.bgl"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStageFlags::ALL_GRAPHICS,
-                binding_type: BindingType::UniformBuffer {
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(CAMERA_UNIFORM_SIZE),
-                },
-                count: None,
-            }],
-        })?;
-        let camera_buffer = rhi.create_buffer(&BufferDesc {
-            label: Some("camera.ubo"),
-            size: CAMERA_UNIFORM_SIZE,
-            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
-            memory: MemoryLocation::Device,
-        })?;
-        let camera_bg = rhi.create_bind_group(&BindGroupDesc {
-            label: Some("camera.bg"),
-            layout: camera_bgl,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer {
-                    buffer: camera_buffer,
-                    offset: 0,
-                    size: Some(CAMERA_UNIFORM_SIZE),
-                },
-            }],
-        })?;
+        // Lit pipeline + camera/instance UBOs (shared with the
+        // runtime). After this call we never construct lit-side
+        // resources locally again.
+        let lit = ocarina_render::lit::build_lit_pipeline(
+            &mut rhi,
+            target_format,
+            DEPTH_FORMAT,
+        )?;
 
-        // Bind group 1: per-instance UBO with dynamic offset.
-        let instance_bgl = rhi.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: Some("instance.bgl"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStageFlags::ALL_GRAPHICS,
-                binding_type: BindingType::UniformBuffer {
-                    has_dynamic_offset: true,
-                    min_binding_size: Some(INSTANCE_UNIFORM_SIZE),
-                },
-                count: None,
-            }],
-        })?;
-        let instance_buffer = rhi.create_buffer(&BufferDesc {
-            label: Some("instance.ubo"),
-            size: INSTANCE_STRIDE * u64::from(MAX_INSTANCES),
-            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
-            memory: MemoryLocation::Device,
-        })?;
-        let instance_bg = rhi.create_bind_group(&BindGroupDesc {
-            label: Some("instance.bg"),
-            layout: instance_bgl,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer {
-                    buffer: instance_buffer,
-                    offset: 0,
-                    size: Some(INSTANCE_UNIFORM_SIZE),
-                },
-            }],
-        })?;
+        // Editor-only alt pipelines (wireframe, unlit). Always built
+        // because the viewport always enables ocarina-render's
+        // `editor` feature.
+        let editor_pipelines =
+            EditorPipelines::build(&mut rhi, &lit, target_format, DEPTH_FORMAT)?;
 
-        // Cube mesh (placeholder geometry — every entity with Transform
-        // currently renders as a unit cube; replaced when mesh assets
-        // come online in Phase 6).
-        let cube = mesh::build_unit_cube();
-        let (cube_vb, cube_ib, cube_index_count) = upload_mesh(&mut rhi, "cube", &cube)?;
+        // Mesh registry. Built-ins (engine/cube, engine/sphere)
+        // pre-loaded; user-asset paths cached on first reference.
+        let mut meshes = MeshRegistry::new();
+        meshes.register_builtins(&mut rhi)?;
+
         // 2D gizmo geometry: translate-axis line+arrow, rotate-axis
         // ring. Both are authored in a *gizmo* vertex format (see
         // `mesh::GizmoVertex`) that the gizmo shader expands into
@@ -291,31 +233,10 @@ impl ViewportRenderer {
         let (rotate_ring_vb, rotate_ring_ib, rotate_ring_index_count) =
             upload_gizmo_mesh(&mut rhi, "rotate_ring", &ring_mesh)?;
 
-        // Lit shader pipeline.
-        let vs = rhi.create_shader(&ShaderDesc {
-            label: Some("lit.wgsl:vs_main"),
-            stage: ShaderStage::Vertex,
-            entry_point: "vs_main",
-            bytecode: ShaderBytecode::Wgsl(LIT_WGSL),
-        })?;
-        let fs = rhi.create_shader(&ShaderDesc {
-            label: Some("lit.wgsl:fs_main"),
-            stage: ShaderStage::Fragment,
-            entry_point: "fs_main",
-            bytecode: ShaderBytecode::Wgsl(LIT_WGSL),
-        })?;
-        let pipeline =
-            build_pipeline(&mut rhi, vs, fs, camera_bgl, instance_bgl, target_format)?;
-
-        rhi.destroy_shader(vs);
-        rhi.destroy_shader(fs);
-
         // Gizmo overlay pipeline. Different vertex format
-        // (`mesh::GizmoVertex`) and shader (`gizmo_2d.wgsl`) — handles
-        // are screen-space-expanded lines, not 3D geometry. Same
-        // camera + instance bind group layouts as lit, with
-        // `target_size` (pixel extent) read from the camera UBO to
-        // convert pixel offsets to NDC.
+        // (`mesh::GizmoVertex`) and shader (`gizmo_2d.wgsl`); handles
+        // are screen-space-expanded lines, not 3D geometry. Reuses
+        // the lit pipeline's camera + instance bind group layouts.
         let gizmo_vs = rhi.create_shader(&ShaderDesc {
             label: Some("gizmo_2d.wgsl:vs_main"),
             stage: ShaderStage::Vertex,
@@ -332,16 +253,16 @@ impl ViewportRenderer {
             &mut rhi,
             gizmo_vs,
             gizmo_fs,
-            camera_bgl,
-            instance_bgl,
+            lit.camera_bgl,
+            lit.instance_bgl,
             target_format,
         )?;
         rhi.destroy_shader(gizmo_vs);
         rhi.destroy_shader(gizmo_fs);
 
-        // Mask pipeline. Same camera/instance bind groups as the lit
-        // pipeline; only the fragment output differs (single-channel
-        // 1.0 into the R8Unorm mask texture).
+        // Mask pipeline. Same camera/instance bind groups as the
+        // lit pipeline; only the fragment output differs
+        // (single-channel 1.0 into the R8Unorm mask texture).
         let mask_vs = rhi.create_shader(&ShaderDesc {
             label: Some("mask.wgsl:vs_main"),
             stage: ShaderStage::Vertex,
@@ -354,8 +275,13 @@ impl ViewportRenderer {
             entry_point: "fs_main",
             bytecode: ShaderBytecode::Wgsl(MASK_WGSL),
         })?;
-        let mask_pipeline =
-            build_mask_pipeline(&mut rhi, mask_vs, mask_fs, camera_bgl, instance_bgl)?;
+        let mask_pipeline = build_mask_pipeline(
+            &mut rhi,
+            mask_vs,
+            mask_fs,
+            lit.camera_bgl,
+            lit.instance_bgl,
+        )?;
         rhi.destroy_shader(mask_vs);
         rhi.destroy_shader(mask_fs);
 
@@ -409,17 +335,12 @@ impl ViewportRenderer {
 
         Ok(Self {
             rhi,
-            pipeline,
+            lit,
+            editor_pipelines,
+            meshes,
             mask_pipeline,
             outline_pipeline,
             gizmo_pipeline,
-            camera_bg,
-            instance_bg,
-            camera_buffer,
-            instance_buffer,
-            cube_vb,
-            cube_ib,
-            cube_index_count,
             translate_axis_vb,
             translate_axis_ib,
             translate_axis_index_count,
@@ -436,6 +357,13 @@ impl ViewportRenderer {
         })
     }
 
+    /// Set the project root used by the mesh registry to resolve
+    /// user-mesh asset paths. Call this when a project is loaded /
+    /// switched. Engine meshes (`engine/cube` etc.) work regardless.
+    pub fn set_project_root(&mut self, root: std::path::PathBuf) {
+        self.meshes.set_project_root(root);
+    }
+
     /// Render `entities` into `ctx.view` at `ctx.rect` (in framebuffer
     /// pixels). Uses `LoadOp::Load` for color so a UI compositor's
     /// underlying paint is preserved; `LoadOp::Clear(1.0)` for depth.
@@ -450,6 +378,7 @@ impl ViewportRenderer {
         camera: ViewportCamera,
         mode: RenderMode,
         gizmo: Option<GizmoOverlay>,
+        config: RenderConfig,
     ) {
         let pixel_w = ctx.rect.width().round() as u32;
         let pixel_h = ctx.rect.height().round() as u32;
@@ -570,22 +499,36 @@ impl ViewportRenderer {
             ),
         };
         self.rhi
-            .write_buffer(self.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
+            .write_buffer(self.lit.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
 
         let selected = match mode {
             RenderMode::Edit { selected_entity } => selected_entity,
             RenderMode::Play => None,
         };
-        // Reserve the last 6 slots for gizmo instances:
-        // [0..3) = translate axes (X, Y, Z), [3..6) = rotate rings.
-        // Both sets render every frame so the user can grab either
-        // without first switching modes.
+
+        // Resolve each entity's mesh handle and build the per-frame
+        // draw list + instance buffer. Slot layout:
+        //   [0..entity_cap)      = entity slots (one per input entity).
+        //   [entity_cap..+6)     = gizmo slots (6 axes / rings).
+        // An entity slot is occupied if (a) the entity has a Mesh
+        // we successfully resolved, or (b) the entity is selected
+        // and meshless -- we draw a small "selection marker" sphere
+        // at its world position so the dot pickup is visible.
         const GIZMO_SLOTS: usize = 6;
         let entity_cap = (MAX_INSTANCES as usize).saturating_sub(GIZMO_SLOTS);
         let count = entities.len().min(entity_cap);
+
+        struct EntityDraw {
+            slot: u32,
+            mesh: MeshHandle,
+            entity: Entity,
+        }
+        let mut entity_draws: Vec<EntityDraw> = Vec::with_capacity(count);
+
         let total_slots = count + if gizmo.is_some() { GIZMO_SLOTS } else { 0 };
         if total_slots > 0 {
-            let mut instance_bytes: Vec<u8> = vec![0; total_slots * INSTANCE_STRIDE as usize];
+            let mut instance_bytes: Vec<u8> =
+                vec![0; total_slots * INSTANCE_STRIDE as usize];
             for (i, inst) in entities.iter().take(count).enumerate() {
                 let highlight = selected == Some(inst.entity);
                 let final_tint = if highlight {
@@ -593,13 +536,49 @@ impl ViewportRenderer {
                 } else {
                     inst.tint
                 };
+
+                // Resolve the entity's mesh (if any); for selected
+                // meshless entities, fall back to a small sphere
+                // marker so they're still pickable / visible.
+                let (model, mesh_handle) = match inst
+                    .mesh
+                    .as_ref()
+                    .and_then(|p| self.meshes.ensure(&mut self.rhi, p))
+                {
+                    Some(handle) => (inst.world_xform, Some(handle)),
+                    None if highlight => {
+                        // Selection marker: small sphere at world pos.
+                        let pos = inst.world_xform.col(3).truncate();
+                        const MARKER_SIZE: f32 = 0.25;
+                        let marker = Mat4::from_scale_rotation_translation(
+                            Vec3::splat(MARKER_SIZE),
+                            glam::Quat::IDENTITY,
+                            pos,
+                        );
+                        let h = self
+                            .meshes
+                            .ensure(&mut self.rhi, &AssetPath::new(ENGINE_SPHERE));
+                        (marker, h)
+                    }
+                    None => continue,
+                };
+
+                let Some(handle) = mesh_handle else {
+                    continue;
+                };
+
                 let offset = i * INSTANCE_STRIDE as usize;
                 let uniform = InstanceUniform {
-                    model: inst.world_xform,
+                    model,
                     tint: final_tint,
                 };
                 instance_bytes[offset..offset + INSTANCE_UNIFORM_SIZE as usize]
                     .copy_from_slice(bytemuck::bytes_of(&uniform));
+                entity_draws.push(EntityDraw {
+                    slot: i as u32,
+                    mesh: handle,
+                    entity: inst.entity,
+                });
             }
             if let Some(g) = gizmo {
                 use crate::gizmo::Axis;
@@ -624,7 +603,7 @@ impl ViewportRenderer {
                     write(3 + i, rotate_ring_model(g.origin, *axis, g.scale_world), *axis);
                 }
             }
-            self.rhi.write_buffer(self.instance_buffer, 0, &instance_bytes);
+            self.rhi.write_buffer(self.lit.instance_buffer, 0, &instance_bytes);
         }
 
         // ─── Now resolve all the wgpu objects we need for the
@@ -634,7 +613,15 @@ impl ViewportRenderer {
         let Some(depth_view) = self.rhi.texture_view(depth) else {
             return;
         };
-        let Some(pipeline) = self.rhi.graphics_pipeline(self.pipeline) else {
+        // RenderMode::Play forces lit (this is the actual game look).
+        // Edit mode honours the editor toggles.
+        let main_pipeline_handle = match mode {
+            RenderMode::Play => self.lit.pipeline,
+            RenderMode::Edit { .. } => {
+                config.select_pipeline(&self.lit, &self.editor_pipelines)
+            }
+        };
+        let Some(pipeline) = self.rhi.graphics_pipeline(main_pipeline_handle) else {
             return;
         };
         let Some(mask_pipeline) = self.rhi.graphics_pipeline(self.mask_pipeline) else {
@@ -645,18 +632,26 @@ impl ViewportRenderer {
         else {
             return;
         };
-        let Some(camera_bg) = self.rhi.bind_group(self.camera_bg) else {
+        let Some(camera_bg) = self.rhi.bind_group(self.lit.camera_bg) else {
             return;
         };
-        let Some(instance_bg) = self.rhi.bind_group(self.instance_bg) else {
+        let Some(instance_bg) = self.rhi.bind_group(self.lit.instance_bg) else {
             return;
         };
-        let Some(cube_vb) = self.rhi.buffer(self.cube_vb) else {
-            return;
-        };
-        let Some(cube_ib) = self.rhi.buffer(self.cube_ib) else {
-            return;
-        };
+        // Resolve every entity-draw's wgpu vb/ib upfront so the
+        // render-pass loop can borrow them all simultaneously
+        // (RHI returns immutable borrows out of the same pool).
+        let mut resolved_draws: Vec<(u32, &wgpu::Buffer, &wgpu::Buffer, u32)> =
+            Vec::with_capacity(entity_draws.len());
+        for d in &entity_draws {
+            let Some(vb) = self.rhi.buffer(d.mesh.vertex_buffer) else {
+                continue;
+            };
+            let Some(ib) = self.rhi.buffer(d.mesh.index_buffer) else {
+                continue;
+            };
+            resolved_draws.push((d.slot, vb, ib, d.mesh.index_count));
+        }
         let Some(translate_axis_vb) = self.rhi.buffer(self.translate_axis_vb) else {
             return;
         };
@@ -677,19 +672,26 @@ impl ViewportRenderer {
             .and_then(|m| self.rhi.texture_view(m));
         let outline_bg = self.outline_bg.and_then(|bg| self.rhi.bind_group(bg));
 
-        // Find the instance index of the selected entity, if any. The
-        // mask pass renders only that one. `entities` is sorted by
-        // Entity in the caller so this index matches the lit pass.
-        let outline_instance: Option<u32> = match mode {
-            RenderMode::Edit { selected_entity: Some(sel) } => entities[..count]
+        // Selected entity's draw record (slot + mesh handle's
+        // wgpu buffers + index count). The mask pass uses it to
+        // re-render the silhouette into the R8 mask. `None` if the
+        // selection has no resolvable mesh AND no marker (which
+        // shouldn't happen because meshless-selected gets a marker).
+        let outline_draw: Option<(u32, &wgpu::Buffer, &wgpu::Buffer, u32)> = match mode {
+            RenderMode::Edit {
+                selected_entity: Some(sel),
+            } => entity_draws
                 .iter()
-                .position(|inst| inst.entity == sel)
-                .map(|i| i as u32),
+                .find(|d| d.entity == sel)
+                .and_then(|d| {
+                    let vb = self.rhi.buffer(d.mesh.vertex_buffer)?;
+                    let ib = self.rhi.buffer(d.mesh.index_buffer)?;
+                    Some((d.slot, vb, ib, d.mesh.index_count))
+                }),
             _ => None,
         };
-        let do_outline = outline_instance.is_some()
-            && mask_view.is_some()
-            && outline_bg.is_some();
+        let do_outline =
+            outline_draw.is_some() && mask_view.is_some() && outline_bg.is_some();
 
         // Clamp scissor to the target so a panel that extends past
         // the swapchain edge (e.g. mid-resize) doesn't trigger
@@ -742,12 +744,16 @@ impl ViewportRenderer {
             pass.set_scissor_rect(sx, sy, sw, sh);
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, camera_bg, &[]);
-            pass.set_vertex_buffer(0, cube_vb.slice(..));
-            pass.set_index_buffer(cube_ib.slice(..), wgpu::IndexFormat::Uint32);
-            for i in 0..count {
-                let dyn_offset = (i as u64 * INSTANCE_STRIDE) as u32;
+            // One draw per resolved entity. Bind the entity's mesh
+            // before each draw -- entities can have different meshes
+            // (built-in cube, built-in sphere, user OBJ, ...) so we
+            // can't share buffers across the loop.
+            for (slot, vb, ib, index_count) in &resolved_draws {
+                let dyn_offset = (*slot as u64 * INSTANCE_STRIDE) as u32;
                 pass.set_bind_group(1, instance_bg, &[dyn_offset]);
-                pass.draw_indexed(0..self.cube_index_count, 0, 0..1);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..*index_count, 0, 0..1);
             }
         }
 
@@ -755,7 +761,8 @@ impl ViewportRenderer {
         // there's no selection or the resize fall-back hasn't yet
         // produced a fresh mask texture / bind group. ────────────
         if do_outline {
-            let outline_idx = outline_instance.unwrap();
+            let (outline_slot, outline_vb, outline_ib, outline_index_count) =
+                outline_draw.unwrap();
             let mask_view = mask_view.unwrap();
             let outline_bg = outline_bg.unwrap();
 
@@ -786,11 +793,11 @@ impl ViewportRenderer {
                 pass.set_scissor_rect(sx, sy, sw, sh);
                 pass.set_pipeline(mask_pipeline);
                 pass.set_bind_group(0, camera_bg, &[]);
-                let dyn_offset = (u64::from(outline_idx) * INSTANCE_STRIDE) as u32;
+                let dyn_offset = (u64::from(outline_slot) * INSTANCE_STRIDE) as u32;
                 pass.set_bind_group(1, instance_bg, &[dyn_offset]);
-                pass.set_vertex_buffer(0, cube_vb.slice(..));
-                pass.set_index_buffer(cube_ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.cube_index_count, 0, 0..1);
+                pass.set_vertex_buffer(0, outline_vb.slice(..));
+                pass.set_index_buffer(outline_ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..outline_index_count, 0, 0..1);
             }
 
             // Outline post-process: fullscreen quad over the
@@ -888,32 +895,6 @@ impl ViewportRenderer {
     }
 }
 
-fn upload_mesh(
-    rhi: &mut WgpuRhi,
-    label: &str,
-    mesh: &mesh::Mesh,
-) -> RhiResult<(BufferHandle, BufferHandle, u32)> {
-    let vb_size = (mesh.vertices.len() * Vertex::SIZE) as u64;
-    let vb = rhi.create_buffer(&BufferDesc {
-        label: Some(&format!("{label}.vb")),
-        size: vb_size,
-        usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
-        memory: MemoryLocation::Device,
-    })?;
-    rhi.write_buffer(vb, 0, bytemuck::cast_slice(&mesh.vertices));
-
-    let ib_size = (mesh.indices.len() * std::mem::size_of::<u32>()) as u64;
-    let ib = rhi.create_buffer(&BufferDesc {
-        label: Some(&format!("{label}.ib")),
-        size: ib_size,
-        usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
-        memory: MemoryLocation::Device,
-    })?;
-    rhi.write_buffer(ib, 0, bytemuck::cast_slice(&mesh.indices));
-
-    Ok((vb, ib, mesh.indices.len() as u32))
-}
-
 fn upload_gizmo_mesh(
     rhi: &mut WgpuRhi,
     label: &str,
@@ -938,73 +919,6 @@ fn upload_gizmo_mesh(
     rhi.write_buffer(ib, 0, bytemuck::cast_slice(&mesh.indices));
 
     Ok((vb, ib, mesh.indices.len() as u32))
-}
-
-fn build_pipeline(
-    rhi: &mut WgpuRhi,
-    vs: ShaderHandle,
-    fs: ShaderHandle,
-    camera_bgl: BindGroupLayoutHandle,
-    instance_bgl: BindGroupLayoutHandle,
-    color_format: TextureFormat,
-) -> RhiResult<PipelineHandle> {
-    let attributes = [
-        VertexAttribute {
-            format: VertexFormat::Float32x3,
-            offset: 0,
-            shader_location: 0,
-        },
-        VertexAttribute {
-            format: VertexFormat::Float32x3,
-            offset: 12,
-            shader_location: 1,
-        },
-        VertexAttribute {
-            format: VertexFormat::Float32x2,
-            offset: 24,
-            shader_location: 2,
-        },
-    ];
-    let vertex_buffers = [VertexBufferLayout {
-        array_stride: Vertex::SIZE as u64,
-        step_mode: VertexStepMode::Vertex,
-        attributes: &attributes,
-    }];
-    let color_targets = [Some(ColorTargetState {
-        format: color_format,
-        blend: Some(ocarina_rhi::BlendState::ALPHA_BLENDING),
-        write_mask: ColorWrites::ALL,
-    })];
-    rhi.create_pipeline(&PipelineDesc {
-        label: Some("lit"),
-        kind: PipelineKind::Graphics(GraphicsPipelineDesc {
-            vertex: VertexStage {
-                shader: vs,
-                buffers: &vertex_buffers,
-            },
-            fragment: Some(FragmentStage {
-                shader: fs,
-                targets: &color_targets,
-            }),
-            primitive: PrimitiveState {
-                cull_mode: None,
-                ..PrimitiveState::default()
-            },
-            depth_stencil: Some(DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
-                stencil_front: Default::default(),
-                stencil_back: Default::default(),
-                stencil_read_mask: 0,
-                stencil_write_mask: 0,
-                bias: Default::default(),
-            }),
-            multisample: MultisampleState::default(),
-        }),
-        bind_group_layouts: &[camera_bgl, instance_bgl],
-        push_constant_ranges: &[],
-    })
 }
 
 /// Build the model matrix for a rotate-axis ring at `origin`. The
@@ -1125,7 +1039,7 @@ fn build_mask_pipeline(
         },
     ];
     let vertex_buffers = [VertexBufferLayout {
-        array_stride: Vertex::SIZE as u64,
+        array_stride: ocarina_render::Vertex::SIZE as u64,
         step_mode: VertexStepMode::Vertex,
         attributes: &attributes,
     }];

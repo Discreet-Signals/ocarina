@@ -45,7 +45,7 @@ pub fn reload_full(scene: &mut Scene) -> LoadReport {
         .dir_entity
         .insert(scene.root_dir.clone(), scene.root);
     scene.file_entity.clear();
-    // Also strip components from the root entity — we re-add them below.
+    // Also strip components from the root entity -- we re-add them below.
     // Pragmatic approach: despawn + respawn the root so no stale
     // components linger. Any external `Entity` references to the old
     // root are invalidated, but Scene owns the root, so this is fine.
@@ -197,24 +197,44 @@ fn apply_toml_file(scene: &mut Scene, entity: Entity, path: &Path) -> Result<(),
         }
     };
 
-    // `_scene.toml` is a reserved metadata file that targets the root
-    // entity (handled by being loaded at the root folder anyway);
-    // otherwise no special logic is needed — sections in any file
-    // apply to this entity.
+    // Walk every section. Per-section failures (unknown component,
+    // load error) are LOGGED and skipped instead of aborting the
+    // file: a typo in one section shouldn't strip the entity of its
+    // other components and silently disappear it from the viewport.
+    // The first such error is still surfaced as the function's
+    // return value so callers that care continue to see *something*.
+    let mut first_section_err: Option<SceneError> = None;
     for (section, value) in &table {
         if section.starts_with(RESERVED_PREFIX) {
             continue;
         }
-        let loader = find_loader(section).ok_or_else(|| SceneError::UnknownComponent {
-            path: path.to_path_buf(),
-            section: section.clone(),
-        })?;
+        let Some(loader) = find_loader(section) else {
+            log::warn!(
+                "scene: unknown component `{section}` in {} -- skipping (is the crate registering it linked into this binary?)",
+                path.display(),
+            );
+            if first_section_err.is_none() {
+                first_section_err = Some(SceneError::UnknownComponent {
+                    path: path.to_path_buf(),
+                    section: section.clone(),
+                });
+            }
+            continue;
+        };
         let mut entity_mut = scene.world.entity_mut(entity);
-        (loader.load)(&mut entity_mut, value).map_err(|message| SceneError::ComponentLoad {
-            path: path.to_path_buf(),
-            section: section.clone(),
-            message,
-        })?;
+        if let Err(message) = (loader.load)(&mut entity_mut, value) {
+            log::warn!(
+                "scene: load of `{section}` in {} failed: {message} -- skipping",
+                path.display(),
+            );
+            if first_section_err.is_none() {
+                first_section_err = Some(SceneError::ComponentLoad {
+                    path: path.to_path_buf(),
+                    section: section.clone(),
+                    message,
+                });
+            }
+        }
     }
 
     log::debug!(
@@ -222,7 +242,10 @@ fn apply_toml_file(scene: &mut Scene, entity: Entity, path: &Path) -> Result<(),
         path.display(),
         entity
     );
-    Ok(())
+    match first_section_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 fn is_toml(path: &Path) -> bool {
@@ -233,7 +256,7 @@ fn is_toml(path: &Path) -> bool {
 
 /// Best-effort canonicalization. If the path doesn't exist (e.g.,
 /// during a `Removed` event we're processing after the file is gone)
-/// we keep the original — `entity_for_dir` and `file_entity` lookups
+/// we keep the original -- `entity_for_dir` and `file_entity` lookups
 /// will then key off the same form `dir_entity` was populated with at
 /// initial load, since `Scene::empty` canonicalized the root.
 fn canonical(path: &Path) -> PathBuf {

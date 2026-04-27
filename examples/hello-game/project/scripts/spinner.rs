@@ -7,7 +7,7 @@
 //! - `Script::tick` runs every frame; `Context::time.dt()` is the
 //!   per-frame delta.
 //!
-//! Authored at `project/scripts/spinner.rs` — `build.rs` discovers
+//! Authored at `project/scripts/spinner.rs` -- `build.rs` discovers
 //! every `*.rs` file in this folder and compiles them into the host
 //! binary as modules. The dev never edits engine code; they edit
 //! TOML and these scripts.

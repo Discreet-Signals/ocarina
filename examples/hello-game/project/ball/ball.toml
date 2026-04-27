@@ -1,0 +1,23 @@
+[name]
+value = "ball"
+
+[transform]
+position = [0.0, 4.0, 0.0]
+rotation = [0.0, 0.0, 0.0]
+scale = [1.0, 1.0, 1.0]
+
+[mesh]
+source = "engine/sphere"
+
+[material]
+tint = [0.95, 0.35, 0.40, 1.0]
+
+[collider]
+shape       = "sphere"
+radius      = 0.5
+restitution = 0.55
+friction    = 0.4
+
+[rigid_body]
+kind = "dynamic"
+mass = 1.0

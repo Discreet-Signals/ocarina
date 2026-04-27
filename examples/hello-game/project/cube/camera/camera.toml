@@ -1,0 +1,20 @@
+# Third-person follow camera, parented to the cube. Because folders
+# nest entity hierarchy and `Scene::world_transforms` composes
+# transforms through parents, this entity's world position rides the
+# cube -- moving the cube moves the camera with it.
+
+[name]
+value = "follow_camera"
+
+# Local-space offset from the cube. Camera default forward is the
+# entity's local -Z, so a +Z offset puts it BEHIND the cube (looking
+# back toward the cube). Pitch -20° tilts the view slightly down.
+[transform]
+position = [0.0, 3.0, 8.0]
+rotation = [-20.0, 0.0, 0.0]
+scale    = [1.0, 1.0, 1.0]
+
+[camera]
+fov_y = 55.0
+near  = 0.1
+far   = 200.0

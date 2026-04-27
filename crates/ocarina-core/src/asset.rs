@@ -11,7 +11,7 @@
 //! - **Editor** widgets can offer a file-picker for these fields.
 //!
 //! Paths are always **project-relative** (`"assets/wood.png"`,
-//! `"scripts/movement.rs"`) — never absolute. The runtime resolves them
+//! `"scripts/movement.rs"`) -- never absolute. The runtime resolves them
 //! against the project root.
 
 use std::fmt;
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// A project-relative path to a file. Serialises as a TOML string, so
-/// authoring stays `source = "assets/wood.png"` — no special syntax.
+/// authoring stays `source = "assets/wood.png"` -- no special syntax.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AssetPath(pub String);
@@ -51,7 +51,7 @@ impl AssetPath {
         project_root.join(&self.0)
     }
 
-    /// True for the empty path — equivalent to "no asset assigned".
+    /// True for the empty path -- equivalent to "no asset assigned".
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

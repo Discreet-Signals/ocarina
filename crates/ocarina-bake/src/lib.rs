@@ -3,7 +3,7 @@
 //! Bake walks a project directory, identifies which files are
 //! *referenced* by some `.toml`, and packages just those into an
 //! archive that `ocarina-runtime` can load. Files no `[component]` /
-//! `[[script]]` ever points at are silently dropped — that's the
+//! `[[script]]` ever points at are silently dropped -- that's the
 //! "every file in the project is a candidate, only referenced ones
 //! ship" rule.
 //!
@@ -44,7 +44,7 @@ pub struct AssetInventory {
 /// Discovery is schema-driven: for each known component (registered
 /// via `#[derive(Component)]`), we know which fields are
 /// `FieldType::AssetPath` and only collect those. Plus a special-case
-/// for the `[[script]]` array-of-tables — its `path` field is always
+/// for the `[[script]]` array-of-tables -- its `path` field is always
 /// an asset reference.
 pub fn harvest_assets(project_root: &Path) -> Result<AssetInventory> {
     // 1. Schema → list of asset-path field names per section.
@@ -241,7 +241,7 @@ mod tests {
     use super::*;
 
     /// Force the inventory linker to retain ocarina-core's components
-    /// — schemas need to be registered for the harvest to know which
+    /// -- schemas need to be registered for the harvest to know which
     /// fields are AssetPath.
     use ocarina_core as _;
 
@@ -260,14 +260,15 @@ mod tests {
     }
 
     #[test]
-    fn harvest_collects_basic_mesh_and_script_paths() {
+    fn harvest_collects_mesh_material_and_script_paths() {
         let project = temp_project("harvest");
         let player = project.join("player");
         fs::create_dir_all(&player).unwrap();
         fs::write(
             player.join("player.toml"),
             "[transform]\nposition = [0,0,0]\n\
-             [basic_mesh]\nsource = \"assets/player.obj\"\ntexture = \"assets/player.png\"\n\
+             [mesh]\nsource = \"assets/player.obj\"\n\
+             [material]\ntexture = \"assets/player.png\"\n\
              [[script]]\npath = \"scripts/movement.rs\"\n\
              [[script]]\npath = \"scripts/health.rs\"\n",
         )
@@ -290,7 +291,7 @@ mod tests {
         fs::create_dir_all(&cave).unwrap();
         fs::write(
             cave.join("cave.toml"),
-            "[basic_mesh]\nsource = \"assets/used.obj\"\n",
+            "[mesh]\nsource = \"assets/used.obj\"\n",
         )
         .unwrap();
         fs::create_dir_all(project.join("assets")).unwrap();

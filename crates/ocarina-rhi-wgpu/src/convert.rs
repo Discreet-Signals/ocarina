@@ -8,6 +8,25 @@ use ocarina_rhi as rhi;
 
 // ────────── Formats ──────────
 
+/// wgpu → RHI format. Returns `None` for wgpu formats the RHI
+/// hasn't enumerated yet (the caller usually treats this as an
+/// "unsupported swapchain format" error).
+pub fn texture_format_from_wgpu(fmt: wgpu::TextureFormat) -> Option<rhi::TextureFormat> {
+    use rhi::TextureFormat as R;
+    use wgpu::TextureFormat as W;
+    Some(match fmt {
+        W::R8Unorm => R::R8Unorm,
+        W::Rgba8Unorm => R::Rgba8Unorm,
+        W::Rgba8UnormSrgb => R::Rgba8UnormSrgb,
+        W::Bgra8Unorm => R::Bgra8Unorm,
+        W::Bgra8UnormSrgb => R::Bgra8UnormSrgb,
+        // Add more as swapchain formats expand. We only need to
+        // round-trip the formats a swapchain might choose; the
+        // forward `texture_format` covers the rest.
+        _ => return None,
+    })
+}
+
 pub fn texture_format(fmt: rhi::TextureFormat) -> wgpu::TextureFormat {
     use rhi::TextureFormat as R;
     use wgpu::TextureFormat as W;

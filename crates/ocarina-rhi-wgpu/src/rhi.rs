@@ -294,6 +294,21 @@ impl WgpuRhi {
             .get(handle.raw().slot, handle.raw().generation)
     }
 
+    /// The color format of `swapchain`'s backbuffer. Pipelines that
+    /// will draw into this swapchain must declare this format as
+    /// their color target. Returns `None` for an invalid handle.
+    #[must_use]
+    pub fn swapchain_format(
+        &self,
+        handle: SwapchainHandle,
+    ) -> Option<ocarina_rhi::TextureFormat> {
+        let raw = handle.raw();
+        self.pools
+            .swapchains
+            .get(raw.slot, raw.generation)
+            .and_then(|sc| crate::convert::texture_format_from_wgpu(sc.config.format))
+    }
+
     /// Look up the underlying `wgpu::RenderPipeline` for a handle.
     /// Returns `None` if the handle is invalid or refers to a compute
     /// pipeline. See [`buffer`](Self::buffer) for the use-case rationale.

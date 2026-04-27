@@ -5,7 +5,7 @@
 //! drive [`Runtime::tick`] each frame and feed input via the
 //! `Runtime::input_mut()` accessor.
 //!
-//! This crate **must not** depend on editor crates — its dependency
+//! This crate **must not** depend on editor crates -- its dependency
 //! tree defines the ship-binary dep surface.
 
 use std::collections::HashMap;
@@ -19,6 +19,7 @@ use glam::Mat4;
 use ocarina_core::components::Scripts;
 use ocarina_core::{Input, Time};
 use ocarina_gameplay_api::{find_script, Context, Script};
+use ocarina_physics::Physics;
 use ocarina_scene::Scene;
 
 pub use ocarina_scene::LoadReport;
@@ -36,6 +37,7 @@ pub struct Runtime {
     scene: Scene,
     time: Time,
     input: Input,
+    physics: Physics,
     /// One vec per entity, parallel to the entity's `Scripts.items`
     /// order. We track them outside the ECS because `Box<dyn Script>`
     /// isn't a component (no Send + Sync + 'static guarantees we want
@@ -54,6 +56,7 @@ impl Runtime {
             scene,
             time: Time::default(),
             input: Input::default(),
+            physics: Physics::new(),
             instances: HashMap::new(),
             started: Default::default(),
         };
@@ -97,7 +100,7 @@ impl Runtime {
                 match find_script(path) {
                     Some(reg) => built.push((reg.construct)()),
                     None => log::warn!(
-                        "no script registered for path `{path}` on entity {entity:?} — skipping"
+                        "no script registered for path `{path}` on entity {entity:?} -- skipping"
                     ),
                 }
             }
@@ -114,6 +117,11 @@ impl Runtime {
     pub fn tick(&mut self, delta: Duration) {
         self.time.advance(delta);
 
+        // Scripts run BEFORE physics so a controller can write
+        // `Velocity` (or apply impulses, once we have them) and have
+        // the next physics step integrate from those values. Reading
+        // input + writing intent → physics integration → render is
+        // the standard frame order.
         let entities: Vec<Entity> = self.instances.keys().copied().collect();
         for entity in entities {
             let Some(mut scripts) = self.instances.remove(&entity) else {
@@ -136,6 +144,11 @@ impl Runtime {
             }
             self.instances.insert(entity, scripts);
         }
+
+        // Physics integrates one step using whatever scripts just
+        // wrote (Velocity, kinematic Transform, etc.) and writes the
+        // post-step state back onto the components.
+        self.physics.step(&mut self.scene.world, delta.as_secs_f32());
 
         self.input.end_frame();
     }
@@ -170,6 +183,12 @@ impl Runtime {
     /// Mutable access for hosts to push input events before each tick.
     pub fn input_mut(&mut self) -> &mut Input {
         &mut self.input
+    }
+    pub fn physics(&self) -> &Physics {
+        &self.physics
+    }
+    pub fn physics_mut(&mut self) -> &mut Physics {
+        &mut self.physics
     }
     pub fn entity_count(&self) -> usize {
         self.scene

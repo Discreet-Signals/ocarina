@@ -38,6 +38,12 @@ winit       = "0.30"
 # --- ECS / gameplay ---
 bevy_ecs    = "0.18"
 
+# --- Physics ---
+# rapier3d directly, not bevy_rapier3d — bevy_rapier requires the
+# full Bevy stack which we don't use. The bridge between rapier and
+# our ECS lives in `ocarina-physics`.
+rapier3d    = "0.32"
+
 # --- Serialization ---
 serde       = { version = "1", features = ["derive"] }
 toml        = "1.1"
@@ -109,8 +115,14 @@ ocarina-bake      = { path = "crates/ocarina-bake", version = "0.1.0" }
 
 ocarina-shader    = { path = "crates/ocarina-shader", version = "0.1.0" }
 ocarina-scene     = { path = "crates/ocarina-scene", version = "0.1.0" }
+ocarina-physics   = { path = "crates/ocarina-physics", version = "0.1.0", default-features = false }
+ocarina-render    = { path = "crates/ocarina-render", version = "0.1.0", default-features = false }
 ocarina-gameplay-api = { path = "crates/ocarina-gameplay-api", version = "0.1.0" }
 ocarina-viewport     = { path = "crates/ocarina-viewport", version = "0.1.0" }
+
+# OBJ mesh loader — compact, single-purpose. Only pulled in by
+# `ocarina-render`'s `obj` feature.
+tobj              = { version = "4", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

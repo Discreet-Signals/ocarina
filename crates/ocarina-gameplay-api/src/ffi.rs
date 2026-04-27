@@ -2,7 +2,7 @@
 //!
 //! Used by the editor's cdylib hot-reload path (load a `.dylib` /
 //! `.so`, resolve `ocarina_plugin_init`, read `PluginInfo`). Static-
-//! link consumers — the runtime, tests, the bake pipeline — don't go
+//! link consumers -- the runtime, tests, the bake pipeline -- don't go
 //! through this; they rely on the inventory-based `ScriptRegistration`
 //! collection in the parent module.
 //!
@@ -52,6 +52,6 @@ fn c_str<'a>(p: *const c_char) -> &'a str {
 
 pub type PluginInitFn = unsafe extern "C" fn() -> PluginInfo;
 
-// SAFETY: same rationale as before — plugin keeps string data alive.
+// SAFETY: same rationale as before -- plugin keeps string data alive.
 unsafe impl Send for PluginInfo {}
 unsafe impl Sync for PluginInfo {}

@@ -18,9 +18,9 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 /// cares about.
 #[derive(Debug, Clone)]
 pub enum SceneEvent {
-    /// File was created or modified — re-parse it.
+    /// File was created or modified -- re-parse it.
     Changed(PathBuf),
-    /// File was deleted — strip any components it contributed.
+    /// File was deleted -- strip any components it contributed.
     Removed(PathBuf),
     /// Subtree was renamed, moved, or had a bulk change. Triggers a
     /// full reload (cheaper than reasoning about what moved where).

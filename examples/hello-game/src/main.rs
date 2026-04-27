@@ -1,14 +1,14 @@
 //! Host binary for an Ocarina game.
 //!
-//! This file is engine plumbing — the dev never touches it once the
+//! This file is engine plumbing -- the dev never touches it once the
 //! project is scaffolded. All gameplay lives in:
 //!
-//! - `project/*.toml`    — entities, components, `[[script]]` attaches.
-//! - `project/scripts/*.rs` — the scripts themselves. `build.rs` walks
+//! - `project/*.toml`    -- entities, components, `[[script]]` attaches.
+//! - `project/scripts/*.rs` -- the scripts themselves. `build.rs` walks
 //!   that folder and compiles each `.rs` into a top-level module of
 //!   this binary, so `#[derive(OcarinaScript)]` registrations light up
 //!   at link time without main.rs needing to know about them.
-//! - `project/assets/...` — meshes, textures, etc., referenced by
+//! - `project/assets/...` -- meshes, textures, etc., referenced by
 //!   `AssetPath` fields in components.
 //!
 //! Build:  `cargo build --release -p hello-game`
@@ -22,6 +22,11 @@
 // Pull in every script the build script discovered. Each becomes a
 // top-level module here so its `inventory::submit!` runs.
 include!(concat!(env!("OUT_DIR"), "/scripts.rs"));
+
+// Force the linker to retain `ocarina-physics`'s component
+// submissions (Collider / RigidBody / Velocity) so `[collider]` /
+// `[rigid_body]` TOML sections are recognised by the loader.
+use ocarina_physics as _;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
