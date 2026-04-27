@@ -145,10 +145,13 @@ pub fn viewport_panel(
                 let mut state = state.borrow_mut();
                 state.render_frame(&ctx, scene.as_ref(), selected_entity);
             });
-            // PaintCx::submit_wgpu_pass converts the local logical rect
-            // to framebuffer pixels (world transform × scale) before
-            // forwarding to the renderer.
-            cx.submit_wgpu_pass(local_rect, pass);
+            // Pre-paint: the viewport draws *under* the UI so
+            // overlays (palettes, dropdowns, popovers) paint cleanly
+            // on top instead of being overdrawn by the 3D scene.
+            // The first pre-paint pass each frame is responsible for
+            // clearing the swapchain (the viewport's lit pass uses
+            // `LoadOp::Clear` for this).
+            cx.submit_pre_paint_wgpu_pass(local_rect, pass);
         }
     });
 

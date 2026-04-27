@@ -10,9 +10,9 @@ value = "follow_camera"
 # entity's local -Z, so a +Z offset puts it BEHIND the cube (looking
 # back toward the cube). Pitch -20° tilts the view slightly down.
 [transform]
-position = [0.0, 3.0, 8.0]
+position = [-0.000699999975040555, 3.0, 8.0]
 rotation = [-20.0, 0.0, 0.0]
-scale    = [1.0, 1.0, 1.0]
+scale = [1.0, 1.0, 1.0]
 
 [camera]
 fov_y = 55.0

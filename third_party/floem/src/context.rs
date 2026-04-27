@@ -1277,6 +1277,29 @@ impl PaintCx<'_> {
             .renderer_mut()
             .submit_wgpu_pass(pixel_rect, pass);
     }
+
+    /// Like [`submit_wgpu_pass`] but the closure runs **before** the
+    /// UI is encoded, so UI elements (dropdowns, palettes, popovers,
+    /// any later-z-ordered widgets) paint on top of the pass output.
+    /// Used by the editor's 3D viewport panel: scene first, UI
+    /// chrome second.
+    pub fn submit_pre_paint_wgpu_pass(
+        &mut self,
+        local_rect: Rect,
+        pass: floem_renderer::WgpuPass,
+    ) {
+        let world = self.transform.transform_rect_bbox(local_rect);
+        let scale = self.paint_state.renderer().scale();
+        let pixel_rect = Rect::new(
+            world.x0 * scale,
+            world.y0 * scale,
+            world.x1 * scale,
+            world.y1 * scale,
+        );
+        self.paint_state
+            .renderer_mut()
+            .submit_pre_paint_wgpu_pass(pixel_rect, pass);
+    }
 }
 
 // TODO: should this be private?

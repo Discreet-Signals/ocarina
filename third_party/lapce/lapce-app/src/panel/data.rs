@@ -245,6 +245,24 @@ impl PanelData {
         false
     }
 
+    /// Tracked variant of [`is_panel_visible`] for use inside reactive
+    /// style closures: re-reads `panels` and `styles` through the
+    /// reactive system so a style closure reruns when the panel list
+    /// or active/shown flags change.
+    pub fn is_panel_visible_tracked(&self, kind: &PanelKind) -> bool {
+        let pos = self
+            .panels
+            .with(|panels| panel_position(panels, kind));
+        if let Some((index, position)) = pos {
+            if let Some(style) =
+                self.styles.with(|styles| styles.get(&position).cloned())
+            {
+                return style.active == index && style.shown;
+            }
+        }
+        false
+    }
+
     pub fn show_panel(&self, kind: &PanelKind) {
         if let Some((index, position)) = self.panel_position(kind) {
             self.styles.update(|styles| {

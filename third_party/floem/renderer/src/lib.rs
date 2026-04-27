@@ -149,6 +149,19 @@ pub trait Renderer {
     /// renderer) silently drop the pass.
     fn submit_wgpu_pass(&mut self, _rect: Rect, _pass: WgpuPass) {}
 
+    /// Like [`submit_wgpu_pass`] but the closure runs **before** the
+    /// UI scene is encoded, so the UI paints on top. The natural
+    /// choice for an embedded 3D viewport: dropdowns, palettes, and
+    /// other UI overlays cleanly cover the 3D panel rect rather than
+    /// being painted over.
+    ///
+    /// Pre-paint passes are responsible for clearing / initialising
+    /// the swapchain texture themselves (the backend skips its own
+    /// clear when at least one pre-paint pass ran). Use
+    /// `LoadOp::Clear(<background_color>)` on the first pre-paint
+    /// pass each frame.
+    fn submit_pre_paint_wgpu_pass(&mut self, _rect: Rect, _pass: WgpuPass) {}
+
     fn debug_info(&self) -> String {
         "Unknown".into()
     }

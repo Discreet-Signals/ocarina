@@ -437,30 +437,59 @@ pub fn panel_container_view(
         });
         let is_maximized = panel.panel_bottom_maximized(true);
         let config = config.get();
+        // Ocarina: when the viewport panel is active in this
+        // container, the container's PANEL_BACKGROUND would paint
+        // over the viewport's pre-paint wgpu pass and hide the 3D
+        // scene. Skip the background fill in that case; the
+        // viewport's own clear color fills the area, and Vger
+        // paints the picker icons + chrome on top with their own
+        // local fills.
+        let is_viewport_active = {
+            let panel_first = panel
+                .active_panel_at_position(&position.first(), true)
+                .map(|(kind, shown)| shown && kind == PanelKind::Viewport)
+                .unwrap_or(false);
+            let panel_second = panel
+                .active_panel_at_position(&position.second(), true)
+                .map(|(kind, shown)| shown && kind == PanelKind::Viewport)
+                .unwrap_or(false);
+            panel_first || panel_second
+        };
         s.apply_if(!panel.is_container_shown(&position, true), |s| s.hide())
             .apply_if(position == PanelContainerPosition::Bottom, |s| {
-                // Ocarina layout: bottom panel sits above the editor, so
-                // the separator is at the bottom of this container
-                // rather than the top. PANEL_BACKGROUND matches the
-                // L/R panels for consistent secondary-bg styling.
-                s.width_pct(100.0)
-                    .background(config.color(LapceColor::PANEL_BACKGROUND))
+                let s = s
+                    .width_pct(100.0)
                     .apply_if(!is_maximized, |s| {
                         s.border_bottom(1.0).height(size as f32)
                     })
-                    .apply_if(is_maximized, |s| s.flex_grow(1.0))
+                    .apply_if(is_maximized, |s| s.flex_grow(1.0));
+                if is_viewport_active {
+                    s
+                } else {
+                    s.background(config.color(LapceColor::PANEL_BACKGROUND))
+                }
             })
             .apply_if(position == PanelContainerPosition::Left, |s| {
-                s.border_right(1.0)
+                let s = s
+                    .border_right(1.0)
                     .width(size as f32)
-                    .height_pct(100.0)
-                    .background(config.color(LapceColor::PANEL_BACKGROUND))
+                    .height_pct(100.0);
+                if is_viewport_active {
+                    s
+                } else {
+                    s.background(config.color(LapceColor::PANEL_BACKGROUND))
+                }
             })
             .apply_if(position == PanelContainerPosition::Right, |s| {
-                s.border_left(1.0)
+                let s = s
+                    .border_left(1.0)
                     .width(size as f32)
-                    .height_pct(100.0)
-                    .background(config.color(LapceColor::PANEL_BACKGROUND))
+                    .height_pct(100.0);
+                if is_viewport_active {
+                    s
+                } else {
+                    s.background(config.color(LapceColor::PANEL_BACKGROUND))
+                }
             })
             // All three containers stack their children vertically:
             //   [picker_first / view_first / view_second / picker_second]
@@ -687,11 +716,15 @@ fn panel_picker(
     )
     .style(move |s| {
         // Picker icons flow horizontally in all three panel
-        // containers — Left, Right, and Bottom — matching upstream
-        // Lapce's L/R style. The picker→view separator is a thin
-        // horizontal line (border_bottom for the first position,
-        // border_top for the second).
-        s.border_color(config.get().color(LapceColor::LAPCE_BORDER))
+        // containers (Left, Right, Bottom). The picker / view
+        // separator is a thin horizontal line. Ocarina note: the
+        // picker carries its own PANEL_BACKGROUND so the tab strip
+        // stays visually attached to the panel chrome even when the
+        // panel container itself drops its background to let the
+        // Viewport's pre-paint pass show through.
+        let cfg = config.get();
+        s.background(cfg.color(LapceColor::PANEL_BACKGROUND))
+            .border_color(cfg.color(LapceColor::LAPCE_BORDER))
             .apply_if(
                 panels.with(|p| {
                     p.get(&position).map(|p| p.is_empty()).unwrap_or(true)

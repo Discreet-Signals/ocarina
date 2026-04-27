@@ -39,6 +39,14 @@ pub struct VgerRenderer {
     /// backbuffer, so each closure paints on top of the UI with
     /// `LoadOp::Load`.
     pending_wgpu_passes: Vec<(Rect, floem_renderer::WgpuPass)>,
+    /// Pre-paint variant: closures pushed via
+    /// `Renderer::submit_pre_paint_wgpu_pass`. Drained BEFORE the UI
+    /// scene is encoded, so the UI paints on top of them. Used by
+    /// the editor's 3D viewport so dropdowns / palettes / popovers
+    /// cover the panel cleanly. When at least one of these ran,
+    /// Vger's UI encode switches its `LoadOp::Clear` to `LoadOp::Load`
+    /// to preserve their output.
+    pending_pre_paint_wgpu_passes: Vec<(Rect, floem_renderer::WgpuPass)>,
 }
 
 impl VgerRenderer {
@@ -112,6 +120,7 @@ impl VgerRenderer {
             swash_scaler: SwashScaler::new(font_embolden),
             adapter,
             pending_wgpu_passes: Vec::new(),
+            pending_pre_paint_wgpu_passes: Vec::new(),
         })
     }
 
@@ -695,13 +704,41 @@ impl Renderer for VgerRenderer {
                 let texture_view = frame
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
+                let format = self.config.format;
+                let target_size = (self.config.width, self.config.height);
+
+                // Drain pre-paint passes FIRST. The first one is
+                // expected to clear the swapchain to its desired
+                // background colour; subsequent ones use LoadOp::Load.
+                // When at least one ran, Vger's UI encode below
+                // switches its own LoadOp::Clear → LoadOp::Load so
+                // the UI paints on top instead of erasing them.
+                let had_pre_paint = !self.pending_pre_paint_wgpu_passes.is_empty();
+                if had_pre_paint {
+                    for (rect, pass) in self.pending_pre_paint_wgpu_passes.drain(..) {
+                        pass(floem_renderer::WgpuPassCtx {
+                            view: &texture_view,
+                            device: &self.device,
+                            queue: &self.queue,
+                            adapter: &self.adapter,
+                            rect,
+                            target_size,
+                            format,
+                        });
+                    }
+                }
+
                 let desc = wgpu::RenderPassDescriptor {
                     label: None,
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &texture_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            load: if had_pre_paint {
+                                wgpu::LoadOp::Load
+                            } else {
+                                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                            },
                             store: StoreOp::Store,
                         },
                     })],
@@ -712,15 +749,13 @@ impl Renderer for VgerRenderer {
 
                 self.vger.encode(&desc);
 
-                // Drain user-provided wgpu render passes pushed during
-                // this frame's paint pass. Each closure sees the
-                // just-rendered UI in `texture_view` and paints on top
-                // with its own command encoder + render pass. Submission
-                // order on the queue is preserved, so closures run after
+                // Drain user-provided post-paint wgpu render passes.
+                // Each closure sees the just-rendered UI in
+                // `texture_view` and paints on top with its own
+                // command encoder + render pass. Submission order on
+                // the queue is preserved, so closures run after
                 // Vger's commands and before `present()`.
                 if !self.pending_wgpu_passes.is_empty() {
-                    let format = self.config.format;
-                    let target_size = (self.config.width, self.config.height);
                     for (rect, pass) in self.pending_wgpu_passes.drain(..) {
                         pass(floem_renderer::WgpuPassCtx {
                             view: &texture_view,
@@ -754,6 +789,14 @@ impl Renderer for VgerRenderer {
 
     fn submit_wgpu_pass(&mut self, rect: Rect, pass: floem_renderer::WgpuPass) {
         self.pending_wgpu_passes.push((rect, pass));
+    }
+
+    fn submit_pre_paint_wgpu_pass(
+        &mut self,
+        rect: Rect,
+        pass: floem_renderer::WgpuPass,
+    ) {
+        self.pending_pre_paint_wgpu_passes.push((rect, pass));
     }
 
     fn push_layer(

@@ -492,4 +492,19 @@ impl floem_renderer::Renderer for Renderer {
             Renderer::Uninitialized { .. } => {}
         }
     }
+
+    fn submit_pre_paint_wgpu_pass(
+        &mut self,
+        rect: peniko::kurbo::Rect,
+        pass: floem_renderer::WgpuPass,
+    ) {
+        match self {
+            #[cfg(feature = "vello")]
+            Renderer::Vello(r) => r.submit_pre_paint_wgpu_pass(rect, pass),
+            #[cfg(not(feature = "vello"))]
+            Renderer::Vger(r) => r.submit_pre_paint_wgpu_pass(rect, pass),
+            Renderer::TinySkia(r) => r.submit_pre_paint_wgpu_pass(rect, pass),
+            Renderer::Uninitialized { .. } => {}
+        }
+    }
 }

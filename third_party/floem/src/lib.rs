@@ -230,6 +230,10 @@ pub use floem_renderer::Svg as RendererSvg;
 pub use id::ViewId;
 pub use peniko;
 pub use peniko::kurbo;
+// Re-exported so callers of `AppConfig::wgpu_features(...)` don't
+// need a direct `wgpu` dep just to name the feature flags. Pinned
+// to whatever version Floem links against.
+pub use wgpu;
 pub use screen_layout::ScreenLayout;
 pub use taffy;
 pub use view::{recursively_layout_view, AnyView, IntoView, View};

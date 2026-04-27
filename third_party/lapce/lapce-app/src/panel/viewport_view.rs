@@ -30,11 +30,13 @@ pub fn viewport_panel(
 
     ocarina_viewport::viewport_panel(scene, selection)
         .style(move |s| {
-            // The renderer paints on top of this background using
-            // LoadOp::Load, so the panel BG fills any area the viewport
-            // doesn't touch.
+            // No background fill: the viewport is a pre-paint pass
+            // that runs BEFORE Vger encodes the UI, and it
+            // `LoadOp::Clear`s the swapchain to its own dark color.
+            // Vger then paints this panel on top with `LoadOp::Load`,
+            // so any opaque background here would just hide the
+            // viewport. We keep the border for the panel chrome.
             s.size_pct(100.0, 100.0)
-                .background(config.get().color(LapceColor::EDITOR_BACKGROUND))
                 .border_color(config.get().color(LapceColor::LAPCE_BORDER))
         })
         .debug_name("Ocarina Viewport Panel")

@@ -98,7 +98,10 @@ use crate::{
         PaletteStatus,
         item::{PaletteItem, PaletteItemContent},
     },
-    panel::{position::PanelContainerPosition, view::panel_container_view},
+    panel::{
+        kind::PanelKind, position::PanelContainerPosition,
+        view::panel_container_view,
+    },
     plugin::{PluginData, plugin_info_view},
     settings::{settings_view, theme_color_settings_view},
     status::status,
@@ -204,8 +207,18 @@ impl AppData {
     }
 
     fn default_window_config(&self) -> WindowConfig {
+        // Ocarina: `with_transparent(true)` tells Floem to skip the
+        // unconditional white fill at the top of `WindowHandle::paint`
+        // (window_handle.rs::671). That fill is encoded into Vger's
+        // scene before any view paints, so it overpaints the
+        // viewport's pre-paint pass and leaves the bottom panel area
+        // visibly white. Lapce's UI covers the rest of the window
+        // with its own opaque backgrounds (title, panels, main_split,
+        // status), so dropping the floor leaves only the viewport
+        // rect uncovered for the pre-paint clear to show through.
         WindowConfig::default()
             .apply_default_theme(false)
+            .with_transparent(true)
             .title("Ocarina")
     }
 
@@ -306,7 +319,15 @@ impl AppData {
         db: Arc<LapceDb>,
         paths: Vec<PathObject>,
     ) -> floem::Application {
-        let mut app = floem::Application::new();
+        // Ocarina-specific: request POLYGON_MODE_LINE so the
+        // viewport panel's wireframe alt pipeline can be built.
+        // Available on every desktop GPU we care about (Metal /
+        // Vulkan / DX12); the wireframe toggle in `RenderConfig`
+        // assumes its presence.
+        let mut app = floem::Application::new_with_config(
+            floem::AppConfig::default()
+                .wgpu_features(floem::wgpu::Features::POLYGON_MODE_LINE),
+        );
 
         let mut initial_windows = 0;
 
@@ -3309,6 +3330,7 @@ fn window_tab(window_tab_data: Rc<WindowTabData>) -> impl View {
     let hover_active = window_tab_data.common.hover.active;
     let status_height = window_tab_data.status_height;
 
+    let panel = window_tab_data.panel.clone();
     let view = stack((
         stack((
             title(window_tab_data.clone()),
@@ -3347,9 +3369,22 @@ fn window_tab(window_tab_data: Rc<WindowTabData>) -> impl View {
     })
     .style(move |s| {
         let config = config.get();
+        // Ocarina: when the Viewport panel is visible, skip the root
+        // EDITOR_BACKGROUND fill. The viewport renders via a pre-paint
+        // wgpu pass that LoadOp::Clears the swapchain to its own color
+        // before Vger encodes UI on top with LoadOp::Load. The root
+        // background here is encoded into Vger's scene and would
+        // overpaint that clear color, hiding the 3D scene. Title,
+        // status, panels, and main_split each supply their own
+        // backgrounds, so dropping the root fill leaves only the
+        // viewport rect uncovered.
+        let viewport_visible =
+            panel.is_panel_visible_tracked(&PanelKind::Viewport);
         s.size_full()
             .color(config.color(LapceColor::EDITOR_FOREGROUND))
-            .background(config.color(LapceColor::EDITOR_BACKGROUND))
+            .apply_if(!viewport_visible, |s| {
+                s.background(config.color(LapceColor::EDITOR_BACKGROUND))
+            })
             .font_size(config.ui.font_size() as f32)
             .apply_if(!config.ui.font_family.is_empty(), |s| {
                 s.font_family(config.ui.font_family.clone())

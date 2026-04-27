@@ -716,8 +716,11 @@ impl ViewportRenderer {
                 label: Some("ocarina viewport encoder"),
             });
 
-        // ─── Lit pass: scene → swapchain color (LoadOp::Load
-        // preserves Floem's UI underneath) + our depth target. ────
+        // ─── Lit pass: scene → swapchain color. The viewport runs
+        // as a *pre-paint* pass (under Floem UI), so it owns the
+        // backbuffer's clear -- LoadOp::Clear initialises the whole
+        // swapchain to the editor background; the UI scene encoded
+        // by Vger afterwards uses LoadOp::Load to paint on top. ───
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ocarina viewport lit pass"),
@@ -725,7 +728,12 @@ impl ViewportRenderer {
                     view: ctx.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.07,
+                            g: 0.09,
+                            b: 0.12,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
