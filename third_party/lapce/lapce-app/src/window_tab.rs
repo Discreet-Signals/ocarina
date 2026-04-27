@@ -716,6 +716,16 @@ impl WindowTabData {
             });
         }
 
+        // Ocarina: keep the bottom panel's tab strip in sync with the
+        // scene's `Camera` entities. Each camera entity gets one
+        // `PanelKind::CameraView(entity_bits)` tab; tabs come and go
+        // when the underlying component is added / removed in the
+        // ECS world.
+        crate::panel::viewport_view::start_camera_panel_sync(
+            window_tab_data.common.ocarina_scene,
+            window_tab_data.panel.clone(),
+        );
+
         window_tab_data
     }
 
@@ -2263,6 +2273,30 @@ impl WindowTabData {
                     tracing::error!("{:?}", err);
                 }
                 self.terminal.terminal_stopped(term_id, *exit_code);
+                // Agent panels: forward the stop to every per-agent
+                // panel. `terminal_stopped` short-circuits unless the
+                // term_id belongs to that panel, so this is safe even
+                // though we don't know up front which panel owns it.
+                // For non-debug terminals (which agents always are)
+                // the call routes to `close_terminal`, auto-closing
+                // the tab when /exit or ^C kills the agent process.
+                for (agent_kind, agent_terminal) in self.agent_terminals.iter() {
+                    agent_terminal.terminal_stopped(term_id, *exit_code);
+                    if agent_terminal
+                        .tab_info
+                        .with_untracked(|info| info.tabs.is_empty())
+                    {
+                        let panel_kind = agent_kind.panel_kind();
+                        if self.panel.is_panel_visible(&panel_kind) {
+                            self.panel.hide_panel(&panel_kind);
+                        }
+                        if self.common.focus.get_untracked()
+                            == Focus::Panel(panel_kind)
+                        {
+                            self.common.focus.set(Focus::Workbench);
+                        }
+                    }
+                }
                 if self
                     .terminal
                     .tab_info
@@ -2430,6 +2464,27 @@ impl WindowTabData {
             Focus::Panel(PanelKind::Terminal) => {
                 self.terminal.key_down(event, &keypress)
             }
+            // Route keystrokes for agent panels to the matching
+            // per-agent `TerminalPanelData`. The `.filter(...)`
+            // skips dispatch when the agent panel has no tabs,
+            // which avoids `TerminalPanelData::key_down`'s
+            // empty-tabs fallback that would auto-spawn a default
+            // shell — agent panels should never expose one.
+            Focus::Panel(PanelKind::ClaudeAgent) => self
+                .agent_terminals
+                .get(&crate::terminal::agents::AgentKind::Claude)
+                .filter(|t| !t.tab_info.with_untracked(|info| info.tabs.is_empty()))
+                .and_then(|t| t.key_down(event, &keypress)),
+            Focus::Panel(PanelKind::CodexAgent) => self
+                .agent_terminals
+                .get(&crate::terminal::agents::AgentKind::Codex)
+                .filter(|t| !t.tab_info.with_untracked(|info| info.tabs.is_empty()))
+                .and_then(|t| t.key_down(event, &keypress)),
+            Focus::Panel(PanelKind::OpencodeAgent) => self
+                .agent_terminals
+                .get(&crate::terminal::agents::AgentKind::Opencode)
+                .filter(|t| !t.tab_info.with_untracked(|info| info.tabs.is_empty()))
+                .and_then(|t| t.key_down(event, &keypress)),
             Focus::Panel(PanelKind::Search) => {
                 Some(keypress.key_down(event, &self.global_search))
             }
@@ -2724,7 +2779,8 @@ impl WindowTabData {
             | PanelKind::DocumentSymbol
             | PanelKind::References
             | PanelKind::Implementation
-            | PanelKind::Viewport => {
+            | PanelKind::Viewport
+            | PanelKind::CameraView(_) => {
                 // Some panels don't accept focus (yet). Fall back to visibility check
                 // in those cases.
                 self.panel.is_panel_visible(&kind)

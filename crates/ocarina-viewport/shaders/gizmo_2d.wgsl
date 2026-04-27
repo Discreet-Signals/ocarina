@@ -17,12 +17,26 @@
 // extent). NDC `[-1,1]` after `set_viewport(...)` maps to that rect,
 // so converting pixels → NDC must use the panel's dimensions.
 
+const MAX_LIGHTS: u32 = 16u;
+
 struct Camera {
     view_proj: mat4x4<f32>,
-    light_dir: vec4<f32>,
-    base_color: vec4<f32>,
+    eye_pos: vec4<f32>,
     /// xy = panel rect in physical pixels.
     viewport_size: vec4<f32>,
+};
+
+struct Light {
+    kind_pad: vec4<u32>,
+    color: vec4<f32>,
+    position: vec4<f32>,
+    direction: vec4<f32>,
+    params: vec4<f32>,
+};
+
+struct Lights {
+    count_pad: vec4<u32>,
+    lights: array<Light, MAX_LIGHTS>,
 };
 
 struct Instance {
@@ -31,6 +45,8 @@ struct Instance {
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<uniform> lights: Lights;
+@group(0) @binding(2) var samp: sampler;
 @group(1) @binding(0) var<uniform> instance: Instance;
 
 struct VsIn {
@@ -94,6 +110,16 @@ fn vs_main(in: VsIn) -> VsOut {
     return out;
 }
 
+/// Linear → sRGB encode. The renderer targets non-sRGB surfaces, so
+/// gamma encoding has to happen here rather than as a hardware
+/// sRGB-format conversion. See `default.wgsl` for the rationale.
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let cutoff = vec3<f32>(0.0031308);
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c < cutoff);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Distance from the line center, in pixels (interpolated).
@@ -102,12 +128,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // `max(.., 0.5)` keeps the math sane at the arrow tip where
     // both `dist` and `max_half_px` go to 0.
     let edge = max(in.max_half_px, 0.5);
-    // 1 px feather inside the boundary — slightly soft edge that
+    // 1 px feather inside the boundary -- slightly soft edge that
     // reads as a smooth line rather than a stairstep.
     let aa_inner = max(edge - 1.0, 0.0);
     let alpha = 1.0 - smoothstep(aa_inner, edge, dist);
     if (alpha <= 0.0) {
         discard;
     }
-    return vec4<f32>(instance.tint.rgb, instance.tint.a * alpha);
+    return vec4<f32>(linear_to_srgb(instance.tint.rgb), instance.tint.a * alpha);
 }

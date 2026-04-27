@@ -173,9 +173,20 @@ impl FileExplorerData {
         }
 
         // Reverse Ocarina selection sync: when the viewport pushes a
-        // selection (a clicked entity → its owning folder), mirror it
-        // into the file explorer's highlight + scroll-to. The forward
-        // direction (file click → viewport) is handled in `click()`.
+        // selection (a clicked entity, plus its owning folder), mirror
+        // it into the file explorer's highlight + scroll-to AND open a
+        // representative component .toml in the editor. The forward
+        // direction (file click in the explorer, then viewport
+        // highlight) is handled in `click()`.
+        //
+        // The early-return below stops the reverse path from
+        // overriding the forward path. When the user clicks a file in
+        // the explorer, `select` is updated *before* `click()` fires
+        // the selection signal (see `file_explorer/view.rs`), so by
+        // the time this effect runs `select` already points at the
+        // user's chosen file or its containing folder. Without the
+        // guard we'd swap their click for our representative-file
+        // pick on every forward sync.
         let selection_signal = data.common.ocarina_selection;
         let effect_data = data.clone();
         cx.create_effect(move |_| {
@@ -184,15 +195,35 @@ impl FileExplorerData {
                 return;
             };
             let folder = selection.folder;
-            let already_on_folder = effect_data.select.with_untracked(|s| {
-                matches!(s, Some(FileNodeViewKind::Path(p)) if p == &folder)
+
+            let already_consistent = effect_data.select.with_untracked(|s| {
+                matches!(s, Some(FileNodeViewKind::Path(p))
+                    if p == &folder || p.parent() == Some(folder.as_path()))
             });
-            if already_on_folder {
+            if already_consistent {
                 return;
             }
-            let visible = effect_data.visible_paths();
-            let idx = visible.iter().position(|p| p == &folder);
-            effect_data.select_path(folder, idx);
+
+            // Viewport click. Pick a representative component file
+            // for the entity (transform.toml if present, otherwise
+            // the first .toml alphabetically). Skip subfolders, which
+            // are child entities, not components on this entity.
+            let representative = pick_representative_component(&folder);
+
+            // `reveal_in_file_tree` auto-expands ancestors, scrolls,
+            // and sets `select`. It works for both files and dirs;
+            // if no representative file exists we still reveal the
+            // folder so the user sees the highlight.
+            let reveal_target = representative
+                .clone()
+                .unwrap_or_else(|| folder.clone());
+            effect_data.reveal_in_file_tree(reveal_target);
+
+            if let Some(file) = representative {
+                effect_data.common.internal_command.send(
+                    InternalCommand::OpenFile { path: file },
+                );
+            }
         });
 
         data
@@ -880,4 +911,45 @@ impl FileExplorerData {
             EventPropagation::Stop
         }
     }
+}
+
+/// Pick a "primary" component file for an Ocarina entity folder, used
+/// to drive the editor when the user picks an entity in the viewport.
+/// `transform.toml` is preferred (most entities have one and it's the
+/// component readers usually want first); otherwise the first `.toml`
+/// in the folder ordered case-insensitively. Subdirectories (child
+/// entities) are ignored. Returns `None` for empty folders or unreadable
+/// dirs, in which case the caller falls back to revealing the folder
+/// itself without opening anything.
+fn pick_representative_component(folder: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(folder).ok()?;
+    let mut tomls: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().ok().is_some_and(|ft| ft.is_file()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+        })
+        .collect();
+    if tomls.is_empty() {
+        return None;
+    }
+    if let Some(t) = tomls.iter().find(|p| {
+        p.file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("transform.toml"))
+    }) {
+        return Some(t.clone());
+    }
+    tomls.sort_by(|a, b| {
+        a.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_ascii_lowercase)
+            .cmp(
+                &b.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_ascii_lowercase),
+            )
+    });
+    tomls.into_iter().next()
 }

@@ -1,0 +1,19 @@
+[name]
+value = "sun"
+
+# Sun-style directional light. The light's direction is the entity's
+# local -Z axis after Transform.rotation is applied (same convention
+# as cameras). Pitch -50° + a bit of yaw points it down + sideways
+# so non-axial faces catch some light too.
+[transform]
+position = [0.0, 10.0, 0.0]
+rotation = [-50.0, 30.0, 0.0]
+scale    = [1.0, 1.0, 1.0]
+
+# Slightly warm sunlight. Bump intensity > 1 if the floor + ball look
+# washed out under the PBR Cook-Torrance shading; the default scene
+# shader applies Reinhard tone mapping so values up to ~3.0 stay
+# under control.
+[directional_light]
+color     = [1.0, 0.95, 0.85]
+intensity = 3.4

@@ -3,7 +3,7 @@
 //! a hypothetical `ocarina-rhi-vulkan` slots in by changing one dep
 //! and zero call sites), and ticks scripts every frame.
 //!
-//! Resources (lit pipeline, meshes, UBOs) and the per-frame command
+//! Resources (default scene pipeline, meshes, UBOs) and the per-frame command
 //! list both go through the RHI. The runtime never imports `wgpu`
 //! directly. That's the load-bearing invariant the engine made
 //! itself when it adopted an RHI: bypassing it would lock the
@@ -28,16 +28,22 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use ocarina_core::components::{Material, Mesh};
+use std::collections::HashMap;
+
+use ocarina_core::components::{Material, Mesh, Sky};
 use ocarina_core::{AssetPath, Key, MouseButton};
+use ocarina_render::shader::ShaderRegistry;
 use ocarina_render::{
-    CameraUniform, InstanceUniform, LitPipeline, MeshHandle, MeshRegistry, INSTANCE_STRIDE,
-    MAX_INSTANCES,
+    build_lights_uniform, build_material_textures_bg, build_sky_pipeline,
+    collect_lights_from_world, CameraUniform, ColorSpace, DefaultPipeline, InstanceUniform,
+    MaterialTextureKey, MaterialUniform, MeshHandle, MeshRegistry, RenderSettings, SkyPipeline,
+    SkyUniform, TextureRegistry, ENGINE_SHADER_DEFAULT, INSTANCE_STRIDE, MATERIAL_STRIDE,
+    MATERIAL_UNIFORM_SIZE, MAX_INSTANCES,
 };
 use ocarina_rhi::{
-    ColorAttachment, CommandList, DepthStencilAttachment, IndexFormat, LoadOp, PresentMode,
-    RenderPassDesc, Rhi, RhiResult, StoreOp, SwapchainHandle, TextureDesc, TextureDimension,
-    TextureFormat, TextureHandle, TextureUsage,
+    BindGroupHandle, ColorAttachment, CommandList, DepthStencilAttachment, IndexFormat, LoadOp,
+    PresentMode, RenderPassDesc, Rhi, RhiResult, StoreOp, SwapchainHandle, TextureDesc,
+    TextureDimension, TextureFormat, TextureHandle, TextureUsage,
 };
 use ocarina_rhi_wgpu::WgpuRhi;
 
@@ -75,13 +81,28 @@ struct RunState {
     window: Arc<Window>,
     rhi: WgpuRhi,
     swapchain: SwapchainHandle,
-    lit: LitPipeline,
+    default_pipeline: DefaultPipeline,
+    sky_pipeline: SkyPipeline,
     meshes: MeshRegistry,
+    textures: TextureRegistry,
+    shader_registry: ShaderRegistry,
+    material_bg_cache: HashMap<MaterialTextureKey, BindGroupHandle>,
     depth: DepthTarget,
     runtime: Runtime,
     last_frame: Instant,
     width: u32,
     height: u32,
+
+    // ── Perf instrumentation ──
+    /// Per-phase elapsed accumulators. Drained + logged every 60 frames
+    /// so a stable average covers vsync jitter without being too noisy.
+    frame_count: u64,
+    total_tick_ms: f64,
+    total_collect_ms: f64,
+    total_upload_ms: f64,
+    total_record_ms: f64,
+    total_present_ms: f64,
+    total_frame_ms: f64,
 }
 
 struct DepthTarget {
@@ -133,14 +154,23 @@ impl ApplicationHandler for App {
             }
         };
 
-        let lit = match ocarina_render::lit::build_lit_pipeline(
+        let default_pipeline = match ocarina_render::default::build_default_pipeline(
             &mut rhi,
             surface_format,
             DEPTH_FORMAT,
         ) {
             Ok(p) => p,
             Err(e) => {
-                log::error!("lit pipeline init: {e}");
+                log::error!("default scene pipeline init: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let sky_pipeline = match build_sky_pipeline(&mut rhi, surface_format, DEPTH_FORMAT) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("sky pipeline init: {e}");
                 event_loop.exit();
                 return;
             }
@@ -153,6 +183,19 @@ impl ApplicationHandler for App {
             event_loop.exit();
             return;
         }
+
+        let mut textures = match TextureRegistry::new(&mut rhi) {
+            Ok(t) => t,
+            Err(e) => {
+                log::error!("texture registry init: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
+        textures.set_project_root(self.project_root.clone());
+
+        let mut shader_registry = ShaderRegistry::new();
+        shader_registry.set_project_root(self.project_root.clone());
 
         let depth = match make_depth(&mut rhi, width, height) {
             Ok(d) => d,
@@ -180,13 +223,24 @@ impl ApplicationHandler for App {
             window,
             rhi,
             swapchain,
-            lit,
+            default_pipeline,
+            sky_pipeline,
             meshes,
+            textures,
+            shader_registry,
+            material_bg_cache: HashMap::new(),
             depth,
             runtime,
             last_frame: Instant::now(),
             width,
             height,
+            frame_count: 0,
+            total_tick_ms: 0.0,
+            total_collect_ms: 0.0,
+            total_upload_ms: 0.0,
+            total_record_ms: 0.0,
+            total_present_ms: 0.0,
+            total_frame_ms: 0.0,
         });
     }
 
@@ -247,13 +301,44 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let now = Instant::now();
-                let dt = now - state.last_frame;
-                state.last_frame = now;
+                let frame_start = Instant::now();
+                let dt = frame_start - state.last_frame;
+                state.last_frame = frame_start;
+
+                let tick_start = Instant::now();
                 state.runtime.tick(dt);
+                let tick_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
+                state.total_tick_ms += tick_ms;
+
                 if let Err(e) = render_frame(state) {
                     log::warn!("render: {e}");
                 }
+
+                let frame_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+                state.total_frame_ms += frame_ms;
+                state.frame_count += 1;
+                if state.frame_count >= 60 {
+                    let n = state.frame_count as f64;
+                    let avg = state.total_frame_ms / n;
+                    log::info!(
+                        "frame {:.2} ms ({:.1} fps) [tick {:.2} | collect {:.2} | upload {:.2} | record {:.2} | present {:.2}]",
+                        avg,
+                        1000.0 / avg,
+                        state.total_tick_ms / n,
+                        state.total_collect_ms / n,
+                        state.total_upload_ms / n,
+                        state.total_record_ms / n,
+                        state.total_present_ms / n,
+                    );
+                    state.frame_count = 0;
+                    state.total_frame_ms = 0.0;
+                    state.total_tick_ms = 0.0;
+                    state.total_collect_ms = 0.0;
+                    state.total_upload_ms = 0.0;
+                    state.total_record_ms = 0.0;
+                    state.total_present_ms = 0.0;
+                }
+
                 state.window.request_redraw();
             }
             _ => {}
@@ -270,6 +355,7 @@ impl ApplicationHandler for App {
 // ─────────────────────────── Frame render ───────────────────────────
 
 fn render_frame(state: &mut RunState) -> Result<()> {
+    let collect_start = Instant::now();
     let aspect = state.width as f32 / state.height.max(1) as f32;
 
     // Active camera (and its entity) BEFORE we take any other
@@ -285,15 +371,18 @@ fn render_frame(state: &mut RunState) -> Result<()> {
     // Compose world transforms once. Used both for the camera
     // matrix lookup and for the per-entity draw matrices.
     let world_xforms = state.runtime.world_transforms();
-    let world = state.runtime.world();
+    // `world` is taken AFTER the lights collection below: that block
+    // grabs `world_mut` to build query states, and an immutable borrow
+    // here would conflict.
 
-    let (view, proj) = if let Some((entity, cam)) = active_camera_entity
+    let (view, proj, eye_pos) = if let Some((entity, cam)) = active_camera_entity
         .filter(|(e, _)| world_xforms.contains_key(e))
     {
         let cam_world = world_xforms[&entity];
         (
             cam_world.inverse(),
             Mat4::perspective_rh(cam.fov_y.to_radians(), aspect, cam.near, cam.far),
+            cam_world.col(3).truncate(),
         )
     } else {
         let centroid = if world_xforms.is_empty() {
@@ -306,23 +395,79 @@ fn render_frame(state: &mut RunState) -> Result<()> {
         (
             Mat4::look_at_rh(cam_pos, centroid, Vec3::Y),
             Mat4::perspective_rh(55f32.to_radians(), aspect, 0.05, 100.0),
+            cam_pos,
         )
     };
 
+    state.total_collect_ms += collect_start.elapsed().as_secs_f64() * 1000.0;
+    let upload_start = Instant::now();
+
     let cam_uniform = CameraUniform {
         view_proj: proj * view,
-        light_dir: Vec4::new(0.35, 1.0, 0.85, 0.0).normalize(),
-        base_color: Vec4::ONE,
+        eye_pos: Vec4::new(eye_pos.x, eye_pos.y, eye_pos.z, 0.0),
         viewport_size: Vec4::new(state.width as f32, state.height as f32, 0.0, 0.0),
     };
-    state
-        .rhi
-        .write_buffer(state.lit.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
+    state.rhi.write_buffer(
+        state.default_pipeline.camera_buffer,
+        0,
+        bytemuck::bytes_of(&cam_uniform),
+    );
 
-    // Build per-instance UBO + draw call list. Skip entities
-    // without a `Mesh` component -- those are cameras, audio
-    // listeners, pure-script entities that have no visible body.
-    let mut entries: Vec<(Entity, Mat4, AssetPath, glam::Vec4)> = Vec::new();
+    // Pack scene lights from `DirectionalLight` / `PointLight` /
+    // `SpotLight` components and upload to the lights UBO. While
+    // we have a mut World handle, also pull the first `Sky`
+    // component (if any) for the sky pass below.
+    let (lights, sky) = {
+        let world_mut = state.runtime.world_mut();
+        let lights = collect_lights_from_world(world_mut, &world_xforms);
+        let sky = {
+            let mut q = world_mut.query::<(Entity, &Sky)>();
+            q.iter(world_mut).next().map(|(_, s)| *s)
+        };
+        (lights, sky)
+    };
+    let lights_uniform = build_lights_uniform(&lights);
+    state.rhi.write_buffer(
+        state.default_pipeline.lights_buffer,
+        0,
+        bytemuck::bytes_of(&lights_uniform),
+    );
+
+    // Sky uniform upload, conditional on a Sky component existing.
+    if let Some(sky) = sky {
+        let sky_uniform = SkyUniform::build(&sky, proj * view, eye_pos);
+        state.rhi.write_buffer(
+            state.sky_pipeline.buffer,
+            0,
+            bytemuck::bytes_of(&sky_uniform),
+        );
+    }
+    let do_sky = sky.is_some();
+
+    // All mut borrows on `state.runtime` are now done. Take a fresh
+    // immut `world` ref for the resource lookup + entry-data loop.
+    let world = state.runtime.world();
+
+    // Look up the active scene shader from `RenderSettings`. This
+    // is the gameplay-side handle for swapping the scene shader at
+    // runtime; `DefaultPipeline::pipeline_for` resolves it through
+    // the cache, falling back to `engine/shaders/default` on miss.
+    let scene_shader = world
+        .get_resource::<RenderSettings>()
+        .map(|s| s.default_shader.clone())
+        .unwrap_or_else(|| AssetPath::new(ENGINE_SHADER_DEFAULT));
+
+    // Build per-entity data: (entity, world transform, mesh path,
+    // material). Skip entities without a `Mesh` component -- those
+    // are cameras, audio listeners, pure-script entities that have
+    // no visible body.
+    struct EntryData {
+        world_xform: Mat4,
+        mesh_path: AssetPath,
+        material: Material,
+        entity: Entity,
+    }
+    let mut entries: Vec<EntryData> = Vec::new();
     for (entity, world_xform) in &world_xforms {
         let Some(mesh) = world.get::<Mesh>(*entity) else {
             continue;
@@ -330,36 +475,83 @@ fn render_frame(state: &mut RunState) -> Result<()> {
         if mesh.source.is_empty() {
             continue;
         }
-        let tint = world
+        let material = world
             .get::<Material>(*entity)
-            .map(|m| m.tint)
-            .unwrap_or_else(|| Vec4::new(0.78, 0.82, 0.90, 1.0));
-        entries.push((*entity, *world_xform, mesh.source.clone(), tint));
+            .cloned()
+            .unwrap_or_default();
+        entries.push(EntryData {
+            entity: *entity,
+            world_xform: *world_xform,
+            mesh_path: mesh.source.clone(),
+            material,
+        });
     }
-    entries.sort_by_key(|(e, ..)| *e);
+    entries.sort_by_key(|e| e.entity);
 
-    let mut draw_calls: Vec<(MeshHandle, u32)> = Vec::with_capacity(entries.len());
+    struct DrawCall {
+        mesh: MeshHandle,
+        slot: u32,
+        material_bg: Option<BindGroupHandle>,
+    }
+    let mut draw_calls: Vec<DrawCall> = Vec::with_capacity(entries.len());
     let mut instance_bytes: Vec<u8> = vec![0; entries.len() * INSTANCE_STRIDE as usize];
-    for (slot, (_entity, world_xform, source, tint)) in
-        entries.iter().enumerate().take(MAX_INSTANCES as usize)
-    {
-        let Some(handle) = state.meshes.ensure(&mut state.rhi, source) else {
+    let mut material_bytes: Vec<u8> = vec![0; entries.len() * MATERIAL_STRIDE as usize];
+    for (slot, entry) in entries.iter().enumerate().take(MAX_INSTANCES as usize) {
+        let Some(handle) = state.meshes.ensure(&mut state.rhi, &entry.mesh_path) else {
             continue;
         };
-        let uniform = InstanceUniform {
-            model: *world_xform,
-            tint: *tint,
+
+        // Mirror albedo into the instance UBO's `tint` so simple
+        // pipelines (none used by the runtime today, but parity with
+        // the editor matters for shared shaders) and the scene
+        // shader land on the same display colour.
+        let instance = InstanceUniform {
+            model: entry.world_xform,
+            tint: entry.material.albedo,
         };
-        let off = slot * INSTANCE_STRIDE as usize;
-        instance_bytes[off..off + std::mem::size_of::<InstanceUniform>()]
-            .copy_from_slice(bytemuck::bytes_of(&uniform));
-        draw_calls.push((handle, slot as u32));
+        let material = MaterialUniform::from_component(&entry.material);
+
+        let inst_off = slot * INSTANCE_STRIDE as usize;
+        instance_bytes[inst_off..inst_off + std::mem::size_of::<InstanceUniform>()]
+            .copy_from_slice(bytemuck::bytes_of(&instance));
+        let mat_off = slot * MATERIAL_STRIDE as usize;
+        material_bytes[mat_off..mat_off + MATERIAL_UNIFORM_SIZE as usize]
+            .copy_from_slice(bytemuck::bytes_of(&material));
+
+        let material_bg = ensure_material_bg(
+            &mut state.rhi,
+            &mut state.textures,
+            &mut state.material_bg_cache,
+            state.default_pipeline.material_textures_bgl,
+            &entry.material,
+        );
+
+        draw_calls.push(DrawCall {
+            mesh: handle,
+            slot: slot as u32,
+            material_bg,
+        });
     }
     if !instance_bytes.is_empty() {
         state
             .rhi
-            .write_buffer(state.lit.instance_buffer, 0, &instance_bytes);
+            .write_buffer(state.default_pipeline.instance_buffer, 0, &instance_bytes);
+        state
+            .rhi
+            .write_buffer(state.default_pipeline.material_buffer, 0, &material_bytes);
     }
+
+    // Resolve the active scene pipeline. Done up front so any
+    // pipeline-cache build (Stage 9) lands before we acquire
+    // immutable RHI borrows for the render pass.
+    let pipeline_handle = state.default_pipeline.pipeline_for(
+        &mut state.rhi,
+        &mut state.shader_registry,
+        &scene_shader,
+    );
+
+    state.total_upload_ms += upload_start.elapsed().as_secs_f64() * 1000.0;
+    let record_start = Instant::now();
 
     // ── Acquire swapchain image + record render pass ──
     let frame_color = state
@@ -368,11 +560,38 @@ fn render_frame(state: &mut RunState) -> Result<()> {
         .map_err(|e| anyhow!("acquire image: {e}"))?;
 
     let mut list = CommandList::new();
+
+    // ─── Sky pass ───
+    // Runs first when a Sky component exists; replaces the lit
+    // pass's solid clear with a per-pixel world-space gradient.
+    if do_sky {
+        let sky_color_attachments = [Some(ColorAttachment {
+            view: frame_color,
+            resolve_target: None,
+            load: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
+            store: StoreOp::Store,
+        })];
+        let mut pass = list.begin_render_pass(&RenderPassDesc {
+            label: Some("ocarina.runtime.sky"),
+            color_attachments: &sky_color_attachments,
+            depth_stencil_attachment: None,
+        });
+        pass.set_pipeline(state.sky_pipeline.pipeline);
+        pass.set_bind_group(0, state.sky_pipeline.bg, &[]);
+        pass.draw(0..6, 0..1);
+    }
+
+    // ─── Lit pass ───
     {
+        let lit_color_load = if do_sky {
+            LoadOp::Load
+        } else {
+            LoadOp::Clear([0.07, 0.09, 0.12, 1.0])
+        };
         let color_attachments = [Some(ColorAttachment {
             view: frame_color,
             resolve_target: None,
-            load: LoadOp::Clear([0.07, 0.09, 0.12, 1.0]),
+            load: lit_color_load,
             store: StoreOp::Store,
         })];
         let depth_attachment = DepthStencilAttachment {
@@ -389,16 +608,27 @@ fn render_frame(state: &mut RunState) -> Result<()> {
             color_attachments: &color_attachments,
             depth_stencil_attachment: Some(depth_attachment),
         });
-        pass.set_pipeline(state.lit.pipeline);
-        pass.set_bind_group(0, state.lit.camera_bg, &[]);
-        for (mesh_handle, slot) in &draw_calls {
-            let dyn_off = (*slot as u64 * INSTANCE_STRIDE) as u32;
-            pass.set_vertex_buffer(0, mesh_handle.vertex_buffer, 0, None);
-            pass.set_index_buffer(mesh_handle.index_buffer, 0, None, IndexFormat::Uint32);
-            pass.set_bind_group(1, state.lit.instance_bg, &[dyn_off]);
-            pass.draw_indexed(0..mesh_handle.index_count, 0, 0..1);
+        pass.set_pipeline(pipeline_handle);
+        pass.set_bind_group(0, state.default_pipeline.frame_bg, &[]);
+        for d in &draw_calls {
+            let inst_off = (u64::from(d.slot) * INSTANCE_STRIDE) as u32;
+            let mat_off = (u64::from(d.slot) * MATERIAL_STRIDE) as u32;
+            pass.set_vertex_buffer(0, d.mesh.vertex_buffer, 0, None);
+            pass.set_index_buffer(d.mesh.index_buffer, 0, None, IndexFormat::Uint32);
+            pass.set_bind_group(
+                1,
+                state.default_pipeline.instance_bg,
+                &[inst_off, mat_off],
+            );
+            if let Some(bg) = d.material_bg {
+                pass.set_bind_group(2, bg, &[]);
+            }
+            pass.draw_indexed(0..d.mesh.index_count, 0, 0..1);
         }
     }
+    state.total_record_ms += record_start.elapsed().as_secs_f64() * 1000.0;
+    let present_start = Instant::now();
+
     state
         .rhi
         .submit(list)
@@ -407,7 +637,51 @@ fn render_frame(state: &mut RunState) -> Result<()> {
         .rhi
         .present(state.swapchain)
         .map_err(|e| anyhow!("present: {e}"))?;
+
+    state.total_present_ms += present_start.elapsed().as_secs_f64() * 1000.0;
     Ok(())
+}
+
+/// Resolve `material`'s four texture slots through the registry,
+/// look up (or build) the cached group-2 bind group, and return its
+/// handle. Two entities with identical texture sets share one bind
+/// group; lookup is the hot path inside the entity loop.
+fn ensure_material_bg(
+    rhi: &mut WgpuRhi,
+    textures: &mut TextureRegistry,
+    cache: &mut HashMap<MaterialTextureKey, BindGroupHandle>,
+    layout: ocarina_rhi::BindGroupLayoutHandle,
+    material: &Material,
+) -> Option<BindGroupHandle> {
+    let albedo =
+        textures.ensure_or_white(rhi, &material.albedo_texture, ColorSpace::Srgb);
+    let normal = textures.ensure_or_flat_normal(rhi, &material.normal_texture);
+    let metallic_roughness = textures.ensure_or_white(
+        rhi,
+        &material.metallic_roughness_texture,
+        ColorSpace::Linear,
+    );
+    let emission =
+        textures.ensure_or_white(rhi, &material.emission_texture, ColorSpace::Srgb);
+    let key = MaterialTextureKey {
+        albedo,
+        normal,
+        metallic_roughness,
+        emission,
+    };
+    if let Some(h) = cache.get(&key) {
+        return Some(*h);
+    }
+    match build_material_textures_bg(rhi, layout, key) {
+        Ok(handle) => {
+            cache.insert(key, handle);
+            Some(handle)
+        }
+        Err(e) => {
+            log::warn!("runtime: material bind-group create failed: {e}");
+            None
+        }
+    }
 }
 
 fn make_depth(rhi: &mut WgpuRhi, width: u32, height: u32) -> RhiResult<DepthTarget> {

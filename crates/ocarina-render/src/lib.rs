@@ -22,15 +22,32 @@
 //!   code, data, or branching reaches the shipped binary.
 
 pub mod builtins;
-pub mod lit;
+pub mod default;
 pub mod mesh;
+pub mod shader;
+pub mod sky;
+pub mod texture;
 
 #[cfg(feature = "editor")]
 pub mod editor;
 
-pub use lit::{CameraUniform, InstanceUniform, LitPipeline, INSTANCE_STRIDE, MAX_INSTANCES};
+pub use default::{
+    build_lights_uniform, build_material_textures_bg, build_scene_pipeline_against,
+    build_simple_pipeline_against, collect_lights_from_world, CameraUniform, DefaultPipeline,
+    InstanceUniform, LightInstance, LightKind, LightUniform, LightsUniform, MaterialTextureKey,
+    MaterialUniform, INSTANCE_STRIDE, LIGHTS_UNIFORM_SIZE, MATERIAL_STRIDE, MATERIAL_UNIFORM_SIZE,
+    MAX_INSTANCES, MAX_LIGHTS,
+};
 pub use mesh::{
     MeshAsset, MeshHandle, MeshRegistry, Vertex, ENGINE_CUBE, ENGINE_PREFIX, ENGINE_SPHERE,
+};
+pub use shader::{
+    RenderSettings, ShaderRegistry, ShaderSource, ENGINE_SHADER_DEFAULT, ENGINE_SHADER_PREFIX,
+};
+pub use sky::{build_sky_pipeline, SkyPipeline, SkyUniform, SKY_UNIFORM_SIZE};
+pub use texture::{
+    ColorSpace, TextureRegistry, ENGINE_TEXTURE_BLACK, ENGINE_TEXTURE_NORMAL,
+    ENGINE_TEXTURE_PREFIX, ENGINE_TEXTURE_WHITE,
 };
 
 #[cfg(feature = "editor")]

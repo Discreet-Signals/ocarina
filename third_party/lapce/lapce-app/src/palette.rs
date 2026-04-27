@@ -880,15 +880,13 @@ impl PaletteData {
     }
 
     fn set_run_configs(&self, content: String) {
+        // Ocarina: parse `run.toml` if the project happens to ship one,
+        // but don't auto-open it as an editor doc when it's missing or
+        // malformed. The engine ships its own Build / Run shortcuts at
+        // the top of this list (below), so an empty / absent
+        // `run.toml` just means "show only the engine actions" -- not
+        // "drop the user into a config file."
         let configs: Option<RunDebugConfigs> = toml::from_str(&content).ok();
-        if configs.is_none() {
-            if let Some(path) = self.workspace.path.as_ref() {
-                let path = path.join(".lapce").join("run.toml");
-                self.common
-                    .internal_command
-                    .send(InternalCommand::OpenFile { path });
-            }
-        }
 
         let executed_run_configs = self.executed_run_configs.borrow();
         let mut items = Vec::new();
@@ -982,32 +980,23 @@ impl PaletteData {
     }
 
     fn get_run_configs(&self) {
+        // Ocarina: skip the upstream `.lapce/run.toml` autoload --
+        // we're a game engine with a fixed Build / Run pipeline,
+        // not a generic IDE configuring arbitrary launch tasks.
+        // `set_run_configs("")` falls through to the engine-injected
+        // Build / Run entries with no run-config items underneath.
+        // Projects that need extra launch configurations can still
+        // drop a `.lapce/run.toml` file in by hand and the parser
+        // below will pick it up; we just don't open / template the
+        // file ourselves.
+        let mut content = String::new();
         if let Some(workspace) = self.common.workspace.path.as_deref() {
             let run_toml = workspace.join(".lapce").join("run.toml");
-            let (doc, new_doc) = self.main_split.get_doc(run_toml.clone(), None);
-            if !new_doc {
-                let content = doc.buffer.with_untracked(|b| b.to_string());
-                self.set_run_configs(content);
-            } else {
-                let loaded = doc.loaded;
-                let palette = self.clone();
-                self.common.scope.create_effect(move |prev_loaded| {
-                    if prev_loaded == Some(true) {
-                        return true;
-                    }
-
-                    let loaded = loaded.get();
-                    if loaded {
-                        let content = doc.buffer.with_untracked(|b| b.to_string());
-                        if content.is_empty() {
-                            doc.reload(Rope::from(DEFAULT_RUN_TOML), false);
-                        }
-                        palette.set_run_configs(content);
-                    }
-                    loaded
-                });
+            if let Ok(read) = std::fs::read_to_string(&run_toml) {
+                content = read;
             }
         }
+        self.set_run_configs(content);
     }
 
     fn get_color_themes(&self) {

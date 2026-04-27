@@ -1,0 +1,24 @@
+[name]
+value = "lamp"
+
+# Floating warm-white lamp 4 m off the ground, off to one side.
+# Small visible sphere so you can see where the light source is;
+# its `emission` makes it appear to glow even though the lamp
+# itself doesn't illuminate other objects (`emission` is local-only
+# until a GI pass lands).
+[transform]
+position = [6.0, 6.0, 2.0]
+rotation = [0.0, 0.0, 0.0]
+scale    = [0.4, 0.4, 0.4]
+
+[mesh]
+#source = "engine/sphere"
+
+[material]
+#albedo   = [1.0, 0.7, 0.3, 1.0]
+#emission = [2.0, 1.4, 0.6]
+
+[point_light]
+color     = [1.0, 0.7, 0.3]
+intensity = 500.0
+range     = 36.0

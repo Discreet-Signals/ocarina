@@ -436,8 +436,19 @@ fn file_explorer_view(
                         let kind = kind.clone();
                         let focus = click_data.common.focus;
                         move |_| {
-                            click_data.click(&click_path, config);
+                            // Set `select` BEFORE `click()` fires the
+                            // ocarina selection signal. The reverse-sync
+                            // effect in `data.rs` reads the current
+                            // `select` to decide whether to override
+                            // (with a representative .toml of the
+                            // entity's folder); if `select` already
+                            // points at the file the user clicked, the
+                            // effect short-circuits and we avoid a
+                            // brief flicker where the editor opens the
+                            // representative file before the user's
+                            // chosen one.
                             select.update(|x| *x = Some(kind.clone()));
+                            click_data.click(&click_path, config);
                             focus.set(Focus::Panel(PanelKind::FileExplorer));
                         }
                     })

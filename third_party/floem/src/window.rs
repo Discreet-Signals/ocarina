@@ -27,6 +27,7 @@ pub struct WindowConfig {
     pub(crate) position: Option<Point>,
     pub(crate) show_titlebar: bool,
     pub(crate) transparent: bool,
+    pub(crate) blur: bool,
     pub(crate) fullscreen: Option<Fullscreen>,
     pub(crate) window_icon: Option<Icon>,
     pub(crate) title: String,
@@ -51,6 +52,7 @@ impl Default for WindowConfig {
             position: None,
             show_titlebar: true,
             transparent: false,
+            blur: false,
             fullscreen: None,
             window_icon: None,
             title: std::env::current_exe()
@@ -136,6 +138,19 @@ impl WindowConfig {
     #[inline]
     pub fn with_transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
+        self
+    }
+
+    /// Sets whether the system should blur whatever is behind the
+    /// window (desktop / other apps). On macOS this is implemented by
+    /// winit via the private `CGSSetWindowBackgroundBlurRadius` API.
+    /// Pair with `with_transparent(true)` and panel backgrounds whose
+    /// alpha is < 1.0 so the blur actually shows through.
+    ///
+    /// The default is `false`.
+    #[inline]
+    pub fn with_blur(mut self, blur: bool) -> Self {
+        self.blur = blur;
         self
     }
 

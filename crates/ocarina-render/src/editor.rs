@@ -9,11 +9,14 @@
 //! grows a `shader: AssetPath` field.
 
 use ocarina_rhi::{
-    PipelineHandle, PolygonMode, PrimitiveState, Rhi, RhiResult, ShaderBytecode, ShaderDesc,
-    ShaderStage, TextureFormat,
+    ColorTargetState, CompareFunction, PipelineHandle, PolygonMode, PrimitiveState, Rhi,
+    RhiResult, TextureFormat,
 };
 
-use crate::lit::{build_lit_graphics_pipeline, LitPipeline};
+use crate::default::{
+    build_scene_pipeline_against, build_simple_pipeline_against, DefaultPipeline,
+    DEFAULT_SCENE_WGSL,
+};
 
 /// Per-frame editor render toggles. The runtime never sees this
 /// struct (the whole module is `cfg`-gated out).
@@ -27,16 +30,16 @@ pub struct RenderConfig {
     /// solid triangles. Useful for inspecting topology without
     /// shading getting in the way.
     pub wireframe: bool,
-    /// Apply the lit shader's lighting model. When false, the
-    /// renderer uses an unlit shader that emits `tint * base_color`
-    /// directly. Useful for "does this entity look right under flat
-    /// reference shading?"
+    /// Apply the default scene shader's lighting model. When false,
+    /// the renderer uses an unlit shader that emits `tint *
+    /// base_color` directly. Useful for "does this entity look right
+    /// under flat reference shading?"
     pub lighting: bool,
     /// Compile + use user-supplied shaders referenced by
     /// `Material.shader`. When false, every entity draws with the
-    /// built-in lit shader regardless of the per-entity setting.
-    /// Useful for isolating "is my custom shader breaking the
-    /// scene?" from other rendering issues.
+    /// built-in default scene shader regardless of the per-entity
+    /// setting. Useful for isolating "is my custom shader breaking
+    /// the scene?" from other rendering issues.
     pub custom_shaders: bool,
 }
 
@@ -50,54 +53,42 @@ impl Default for RenderConfig {
     }
 }
 
-// ─────────────────────── Wireframe alt pipeline ───────────────────────
+// ─────────────────────── Editor alt pipelines ───────────────────────
 
 const UNLIT_WGSL: &str = include_str!("../shaders/unlit.wgsl");
 
-/// Editor-only pipeline variants. The wireframe pipeline reuses the
-/// lit shader but draws lines; the unlit pipeline draws solid
-/// triangles with no lighting term.
+/// Editor-only pipeline variants.
 ///
-/// Both variants share the [`LitPipeline`]'s bind group layouts so
-/// the same camera + instance UBOs feed every pipeline. Switching
-/// between them is `pass.set_pipeline(...)` only.
+/// - `wireframe` reuses the default scene shader (full PBR layout
+///   with material UBO + textures) but draws polygons in line mode.
+///   Drawing it goes through the same per-entity bind-group setup
+///   the default pipeline does.
+/// - `unlit` uses the simple pipeline layout (no material UBO, no
+///   textures); the simpler binding path that mask + gizmo also
+///   take. Lighting toggle "off" uses this to render flat colours.
 pub struct EditorPipelines {
     pub wireframe: PipelineHandle,
     pub unlit: PipelineHandle,
 }
 
 impl EditorPipelines {
-    /// Build wireframe + unlit alongside an existing lit pipeline.
-    /// Requires the rhi to have been initialised with
-    /// `Features::POLYGON_MODE_LINE` for wireframe rendering;
-    /// currently `ocarina-rhi-wgpu` requests this when the editor
-    /// feature is enabled by its consumer.
+    /// Build wireframe + unlit alongside an existing default
+    /// pipeline. Requires the rhi to have been initialised with
+    /// `Features::POLYGON_MODE_LINE` for wireframe rendering.
     pub fn build(
         rhi: &mut dyn Rhi,
-        lit: &LitPipeline,
+        default_pipeline: &DefaultPipeline,
         target_format: TextureFormat,
         depth_format: TextureFormat,
     ) -> RhiResult<Self> {
-        // Wireframe: same lit shader, polygon_mode = Line.
-        let lit_wgsl = include_str!("../shaders/lit.wgsl");
-        let vs_w = rhi.create_shader(&ShaderDesc {
-            label: Some("render.editor.wire:vs"),
-            stage: ShaderStage::Vertex,
-            entry_point: "vs_main",
-            bytecode: ShaderBytecode::Wgsl(lit_wgsl),
-        })?;
-        let fs_w = rhi.create_shader(&ShaderDesc {
-            label: Some("render.editor.wire:fs"),
-            stage: ShaderStage::Fragment,
-            entry_point: "fs_main",
-            bytecode: ShaderBytecode::Wgsl(lit_wgsl),
-        })?;
-        let wireframe = build_lit_graphics_pipeline(
+        // Wireframe: full scene-shader layout, polygon_mode = Line.
+        let wireframe = build_scene_pipeline_against(
             rhi,
-            vs_w,
-            fs_w,
-            lit.camera_bgl,
-            lit.instance_bgl,
+            default_pipeline.frame_bgl,
+            default_pipeline.instance_bgl,
+            default_pipeline.material_textures_bgl,
+            "render.editor.wireframe",
+            DEFAULT_SCENE_WGSL,
             target_format,
             depth_format,
             PrimitiveState {
@@ -106,37 +97,25 @@ impl EditorPipelines {
                 ..PrimitiveState::default()
             },
         )?;
-        rhi.destroy_shader(vs_w);
-        rhi.destroy_shader(fs_w);
 
-        // Unlit: separate shader, same vertex layout, same UBO bindings.
-        let vs_u = rhi.create_shader(&ShaderDesc {
-            label: Some("render.editor.unlit:vs"),
-            stage: ShaderStage::Vertex,
-            entry_point: "vs_main",
-            bytecode: ShaderBytecode::Wgsl(UNLIT_WGSL),
-        })?;
-        let fs_u = rhi.create_shader(&ShaderDesc {
-            label: Some("render.editor.unlit:fs"),
-            stage: ShaderStage::Fragment,
-            entry_point: "fs_main",
-            bytecode: ShaderBytecode::Wgsl(UNLIT_WGSL),
-        })?;
-        let unlit = build_lit_graphics_pipeline(
+        // Unlit: simple layout (no material / texture bindings).
+        let unlit = build_simple_pipeline_against(
             rhi,
-            vs_u,
-            fs_u,
-            lit.camera_bgl,
-            lit.instance_bgl,
+            default_pipeline.frame_bgl,
+            default_pipeline.simple_instance_bgl,
+            "render.editor.unlit",
+            UNLIT_WGSL,
             target_format,
             depth_format,
             PrimitiveState {
                 cull_mode: None,
                 ..PrimitiveState::default()
             },
+            None,
+            CompareFunction::Less,
+            true,
+            None::<&[Option<ColorTargetState>]>,
         )?;
-        rhi.destroy_shader(vs_u);
-        rhi.destroy_shader(fs_u);
 
         Ok(Self { wireframe, unlit })
     }
@@ -145,18 +124,38 @@ impl EditorPipelines {
 impl RenderConfig {
     /// Pick which pipeline the renderer should bind for entity
     /// draws this frame.
+    ///
+    /// Returns the pipeline handle plus a flag indicating whether
+    /// it's a "scene" pipeline (uses material UBO + textures, group
+    /// 1/2 binding pattern) or a "simple" pipeline (just instance
+    /// UBO at group 1). The renderer needs the flag to set the
+    /// right number of bind groups per draw.
     #[must_use]
     pub fn select_pipeline(
         self,
-        lit: &LitPipeline,
+        default_pipeline: &DefaultPipeline,
         editor: &EditorPipelines,
-    ) -> PipelineHandle {
-        if self.wireframe {
-            editor.wireframe
-        } else if !self.lighting {
-            editor.unlit
+    ) -> (PipelineHandle, PipelineLayout) {
+        if !self.lighting {
+            (editor.unlit, PipelineLayout::Simple)
+        } else if self.wireframe {
+            (editor.wireframe, PipelineLayout::Scene)
         } else {
-            lit.pipeline
+            (default_pipeline.pipeline, PipelineLayout::Scene)
         }
     }
 }
+
+/// Which bind-group layout family a pipeline expects. The renderer
+/// uses this to decide whether to bind material + textures (Scene)
+/// or just the instance UBO (Simple).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineLayout {
+    /// Group 0 (frame), group 1 (instance + material), group 2
+    /// (material textures). Default + wireframe.
+    Scene,
+    /// Group 0 (frame), group 1 (simple instance only). Unlit, mask,
+    /// gizmo.
+    Simple,
+}
+

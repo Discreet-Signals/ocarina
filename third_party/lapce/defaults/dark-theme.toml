@@ -27,8 +27,11 @@ white = "#ABB2BF"
 yellow = "#E5C07B"
 
 primary-background = "$black"
-# Background for 'secondary' elements: panels, palette, status bar, completion, hover
-secondary-background = "#21252B"
+# Background for 'secondary' elements: panels, palette, status bar, completion, hover.
+# Alpha here lets the OS WindowServer blur (`with_blur(true)` plus
+# `with_transparent(true)`) show through panels without softening
+# the editor area.
+secondary-background = "#21252BCC"
 current-background = "#2C313A"
 text = "$white"
 dim-text = "#5C6370"

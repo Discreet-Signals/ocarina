@@ -34,7 +34,7 @@ use crate::{
         call_hierarchy_view::show_hierarchy_panel, document_symbol::symbol_panel,
         implementation_view::implementation_panel,
         references_view::references_panel,
-        viewport_view::viewport_panel,
+        viewport_view::{camera_viewport_panel, viewport_panel},
     },
     terminal::agents::AgentKind,
     window_tab::{DragContent, WindowTabData},
@@ -445,13 +445,16 @@ pub fn panel_container_view(
         // paints the picker icons + chrome on top with their own
         // local fills.
         let is_viewport_active = {
+            let is_vp = |kind: PanelKind| {
+                matches!(kind, PanelKind::Viewport | PanelKind::CameraView(_))
+            };
             let panel_first = panel
                 .active_panel_at_position(&position.first(), true)
-                .map(|(kind, shown)| shown && kind == PanelKind::Viewport)
+                .map(|(kind, shown)| shown && is_vp(kind))
                 .unwrap_or(false);
             let panel_second = panel
                 .active_panel_at_position(&position.second(), true)
-                .map(|(kind, shown)| shown && kind == PanelKind::Viewport)
+                .map(|(kind, shown)| shown && is_vp(kind))
                 .unwrap_or(false);
             panel_first || panel_second
         };
@@ -563,6 +566,14 @@ fn panel_view(
                 PanelKind::Viewport => {
                     viewport_panel(window_tab_data.clone(), position).into_any()
                 }
+                PanelKind::CameraView(entity_bits) => {
+                    camera_viewport_panel(
+                        window_tab_data.clone(),
+                        position,
+                        entity_bits,
+                    )
+                    .into_any()
+                }
                 PanelKind::ClaudeAgent => {
                     agent_panel(window_tab_data.clone(), AgentKind::Claude)
                         .into_any()
@@ -631,6 +642,7 @@ fn panel_picker(
                 PanelKind::References => "References",
                 PanelKind::Implementation => "Implementation",
                 PanelKind::Viewport => "Viewport",
+                PanelKind::CameraView(_) => "Camera",
                 PanelKind::ClaudeAgent => "Claude",
                 PanelKind::CodexAgent => "Codex",
                 PanelKind::OpencodeAgent => "Opencode",

@@ -309,6 +309,7 @@ impl ApplicationHandle {
             position,
             show_titlebar,
             transparent,
+            blur,
             fullscreen,
             window_icon,
             title,
@@ -332,6 +333,7 @@ impl ApplicationHandle {
             .with_title(title)
             .with_decorations(!undecorated)
             .with_transparent(transparent)
+            .with_blur(blur)
             .with_fullscreen(fullscreen)
             .with_window_level(window_level)
             .with_window_icon(window_icon)
@@ -558,3 +560,4 @@ impl ApplicationHandle {
         self.fire_timer(event_loop);
     }
 }
+

@@ -88,9 +88,33 @@ impl VgerRenderer {
         let surface_caps = surface.get_capabilities(&adapter);
         let texture_format = surface_caps
             .formats
-            .into_iter()
+            .iter()
+            .copied()
             .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
             .ok_or_else(|| anyhow::anyhow!("surface should support Rgba8Unorm or Bgra8Unorm"))?;
+
+        // Picking `PreMultiplied` (when supported) makes wgpu set
+        // `CAMetalLayer.opaque = NO` on macOS, which is what lets the
+        // window's WindowServer-level blur (toggled via
+        // `WindowConfig::with_blur(true)`) show through pixels with
+        // alpha < 1. Vger's blend factors `(SrcAlpha,
+        // OneMinusSrcAlpha)` produce premultiplied-shaped RGB in the
+        // buffer (`rgb = panel * alpha`), which matches what
+        // PreMultiplied expects. `Auto` defaults to Opaque on macOS
+        // and silently masks the blur, so we choose explicitly.
+        let alpha_mode = if surface_caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else if surface_caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+        {
+            wgpu::CompositeAlphaMode::PostMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -98,7 +122,7 @@ impl VgerRenderer {
             width,
             height,
             present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 1,
         };

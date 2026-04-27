@@ -4,17 +4,30 @@
 // (R8Unorm) screen-sized texture. The outline post-process below
 // samples this mask + 4 neighbors to find the silhouette boundary.
 //
-// Reuses the lit shader's vertex layout + Camera/Instance UBOs so the
-// caller can drive this pipeline with the same bind groups it uses
-// for the main lit draw — only the fragment output differs.
+// Uses the simple pipeline layout: frame bind group at group 0
+// (camera + lights + sampler, declared for compatibility but only
+// `view_proj` is read) and the simple instance bind group at
+// group 1 (just the instance UBO, no material).
+
+const MAX_LIGHTS: u32 = 16u;
 
 struct Camera {
     view_proj: mat4x4<f32>,
-    light_dir: vec4<f32>,
-    base_color: vec4<f32>,
-    /// Layout-only padding so the camera UBO matches the
-    /// gizmo shader's struct (which uses `viewport_size`).
+    eye_pos: vec4<f32>,
     viewport_size: vec4<f32>,
+};
+
+struct Light {
+    kind_pad: vec4<u32>,
+    color: vec4<f32>,
+    position: vec4<f32>,
+    direction: vec4<f32>,
+    params: vec4<f32>,
+};
+
+struct Lights {
+    count_pad: vec4<u32>,
+    lights: array<Light, MAX_LIGHTS>,
 };
 
 struct Instance {
@@ -23,6 +36,9 @@ struct Instance {
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<uniform> lights: Lights;
+@group(0) @binding(2) var samp: sampler;
+
 @group(1) @binding(0) var<uniform> instance: Instance;
 
 struct VsIn {

@@ -10,8 +10,11 @@ scale = [20.0, 0.5, 20.0]
 source = "engine/cube"
 
 [material]
-texture = "assets/cube_diffuse.png"
-tint    = [0.35, 0.55, 0.40, 1.0]
+# albedo_texture = "assets/floor_diffuse.png"  # drop a PNG here to tile the floor
+albedo    = [0.35, 0.55, 0.40, 1.0]
+metallic  = 0.0
+roughness = 0.85
+#emission = [0.35, 0.55, 0.40]
 
 [collider]
 shape    = "box"

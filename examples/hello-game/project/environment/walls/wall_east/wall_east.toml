@@ -1,0 +1,23 @@
+[name]
+value = "wall_east"
+
+[transform]
+position = [10.0, 0.5, 0.0]
+rotation = [0.0, 0.0, 0.0]
+scale    = [0.5, 1.0, 19.0]
+
+[mesh]
+source = "engine/cube"
+
+[material]
+albedo    = [1.0, 1.0, 1.0, 1.0]
+metallic  = 0.0
+roughness = 0.85
+
+[collider]
+shape    = "box"
+size     = [0.5, 1.0, 19.0]
+friction = 0.6
+
+[rigid_body]
+kind = "static"

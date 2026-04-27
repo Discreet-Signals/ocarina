@@ -216,9 +216,21 @@ impl AppData {
         // with its own opaque backgrounds (title, panels, main_split,
         // status), so dropping the floor leaves only the viewport
         // rect uncovered for the pre-paint clear to show through.
+        //
+        // `with_blur(true)` asks the macOS WindowServer to blur
+        // whatever sits behind the window (private
+        // `CGSSetWindowBackgroundBlurRadius` API winit wraps for us).
+        // This is the same mechanism Notification Center, Terminal,
+        // Warp, and friends use; it does not touch the view
+        // hierarchy and so doesn't conflict with wgpu's
+        // CAMetalLayer. To actually see the blur, panels need
+        // alpha < 1.0 in the theme, and the wgpu surface needs a
+        // transparent composite alpha mode (Vger picks
+        // `PreMultiplied` when the surface supports it).
         WindowConfig::default()
             .apply_default_theme(false)
             .with_transparent(true)
+            .with_blur(true)
             .title("Ocarina")
     }
 
@@ -3378,8 +3390,10 @@ fn window_tab(window_tab_data: Rc<WindowTabData>) -> impl View {
         // status, panels, and main_split each supply their own
         // backgrounds, so dropping the root fill leaves only the
         // viewport rect uncovered.
-        let viewport_visible =
-            panel.is_panel_visible_tracked(&PanelKind::Viewport);
+        // Editor `Viewport` OR any `CameraView` tab counts -- both
+        // render as pre-paint wgpu passes that need the root fill
+        // skipped to be visible.
+        let viewport_visible = panel.is_any_viewport_panel_visible_tracked();
         s.size_full()
             .color(config.color(LapceColor::EDITOR_FOREGROUND))
             .apply_if(!viewport_visible, |s| {

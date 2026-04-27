@@ -263,6 +263,38 @@ impl PanelData {
         false
     }
 
+    /// Ocarina: tracked check for "is any viewport-class panel
+    /// (`Viewport` editor or any `CameraView`) the active panel
+    /// somewhere?" Drives the root window background skip so the
+    /// pre-paint wgpu pass can show through. Equivalent to
+    /// `is_panel_visible_tracked(&Viewport) ||
+    ///  is_panel_visible_tracked(&CameraView(any))` but doesn't
+    /// require the caller to enumerate camera entities.
+    pub fn is_any_viewport_panel_visible_tracked(&self) -> bool {
+        self.panels.with(|panels| {
+            self.styles.with(|styles| {
+                for (position, kinds) in panels.iter() {
+                    let Some(style) = styles.get(position) else {
+                        continue;
+                    };
+                    if !style.shown {
+                        continue;
+                    }
+                    let Some(active) = kinds.get(style.active) else {
+                        continue;
+                    };
+                    if matches!(
+                        active,
+                        PanelKind::Viewport | PanelKind::CameraView(_)
+                    ) {
+                        return true;
+                    }
+                }
+                false
+            })
+        })
+    }
+
     pub fn show_panel(&self, kind: &PanelKind) {
         if let Some((index, position)) = self.panel_position(kind) {
             self.styles.update(|styles| {

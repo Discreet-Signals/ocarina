@@ -2,7 +2,7 @@
 value = "ball"
 
 [transform]
-position = [0.0, 4.0, 0.0]
+position = [-1.0, 0.51, -1.0]
 rotation = [0.0, 0.0, 0.0]
 scale = [1.0, 1.0, 1.0]
 
@@ -10,7 +10,9 @@ scale = [1.0, 1.0, 1.0]
 source = "engine/sphere"
 
 [material]
-tint = [0.95, 0.35, 0.40, 1.0]
+albedo    = [0.95, 0.05, 0.02, 1.0]
+metallic  = 0.0
+roughness = 0.95
 
 [collider]
 shape       = "sphere"

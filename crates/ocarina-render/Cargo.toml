@@ -11,6 +11,7 @@ ocarina-rhi.workspace = true
 ocarina-core.workspace = true
 ocarina-shader.workspace = true
 
+bevy_ecs.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 log.workspace = true
@@ -19,11 +20,16 @@ log.workspace = true
 # meshes are always available even without this feature.
 tobj = { workspace = true, optional = true }
 
+# PNG / JPEG decoder for material textures. Optional; PBR materials
+# without textures still render via solid scalar / color values.
+image = { workspace = true, optional = true }
+
 [features]
-# `obj` is on by default because the user-facing model is "drop a
-# .obj into your project, reference it from Mesh.source."
-default = ["obj"]
+# Default-on: every shipped game expects to load OBJ meshes and PNG
+# textures from the project folder.
+default = ["obj", "texture"]
 obj = ["dep:tobj"]
+texture = ["dep:image"]
 # Editor-only feature gate. Wireframe pipeline, unlit shader,
 # RenderConfig toggles, custom-shader hot path. The runtime binary
 # builds with this OFF and the entire editor render-path machinery

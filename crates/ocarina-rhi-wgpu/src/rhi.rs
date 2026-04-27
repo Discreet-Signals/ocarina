@@ -187,14 +187,21 @@ impl WgpuRhi {
         ))
         .map_err(|e| RhiError::DeviceUnavailable(e.to_string()))?;
 
-        // Pick a surface format. Prefer sRGB for "correct" rendering; fall
-        // back to whatever the surface reports first.
+        // Pick a NON-sRGB surface format. Our scene shader does a
+        // manual `linear_to_srgb` encode at the end of the fragment
+        // (so the editor's viewport, which uses Floem's vger and
+        // pins to non-sRGB targets, displays correctly). Pairing
+        // that with an sRGB-encoded swapchain here would
+        // double-correct: hardware would re-encode our already-
+        // encoded output and the runtime would render too bright.
+        // Match the editor's format choice instead so a single
+        // shader output path serves both hosts.
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .unwrap_or_else(|| surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {

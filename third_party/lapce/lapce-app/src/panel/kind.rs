@@ -19,9 +19,22 @@ pub enum PanelKind {
     DocumentSymbol,
     References,
     Implementation,
-    /// Ocarina 3D viewport — renders the live ECS scene through the
+    /// Ocarina 3D viewport -- renders the live ECS scene through the
     /// shared wgpu device.
     Viewport,
+    /// Ocarina per-camera viewport. The `u64` payload is the
+    /// scene-camera entity's `Entity::to_bits()` value; the renderer
+    /// re-resolves the entity each frame so a stale id (camera was
+    /// removed mid-frame) just renders nothing for one frame before
+    /// the sync drops the tab. Tab lifetime is tied to the entity's
+    /// `Camera` component: added when the component appears, removed
+    /// when it disappears.
+    ///
+    /// `#[strum(disabled)]` -- `EnumIter` doesn't work for tuple
+    /// variants without `Default` and we don't want this to show up
+    /// in the "auto-insert all panels" path anyway.
+    #[strum(disabled)]
+    CameraView(u64),
     ClaudeAgent,
     CodexAgent,
     OpencodeAgent,
@@ -42,6 +55,7 @@ impl PanelKind {
             PanelKind::References => LapceIcons::REFERENCES,
             PanelKind::Implementation => LapceIcons::IMPLEMENTATION,
             PanelKind::Viewport => LapceIcons::START,
+            PanelKind::CameraView(_) => LapceIcons::START,
             PanelKind::ClaudeAgent => LapceIcons::AGENT_CLAUDE,
             PanelKind::CodexAgent => LapceIcons::AGENT_OPENAI,
             PanelKind::OpencodeAgent => LapceIcons::AGENT_OPENCODE,
@@ -74,6 +88,7 @@ impl PanelKind {
             PanelKind::Implementation => PanelPosition::BottomLeft,
             // Viewport sits in the bottom area as a wide 3D scene panel.
             PanelKind::Viewport => PanelPosition::BottomLeft,
+            PanelKind::CameraView(_) => PanelPosition::BottomLeft,
             PanelKind::ClaudeAgent => PanelPosition::RightTop,
             PanelKind::CodexAgent => PanelPosition::RightTop,
             PanelKind::OpencodeAgent => PanelPosition::RightTop,

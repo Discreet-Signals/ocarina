@@ -1,0 +1,23 @@
+[name]
+value = "ramp"
+
+[transform]
+position = [-5.0, 0.5889000296592712, 4.45419979095459]
+rotation = [18.502199172973633, 0.0, 0.0]
+scale = [2.0, 0.30000001192092896, 5.0]
+
+[mesh]
+source = "engine/cube"
+
+[material]
+albedo    = [0.21, 0.1, 0.01, 1.0]
+metallic  = 0.0
+roughness = 0.8
+
+[collider]
+shape    = "box"
+size     = [2.0, 0.3, 5.0]
+friction = 0.7
+
+[rigid_body]
+kind = "static"

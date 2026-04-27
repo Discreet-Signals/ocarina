@@ -124,6 +124,11 @@ ocarina-viewport     = { path = "crates/ocarina-viewport", version = "0.1.0" }
 # `ocarina-render`'s `obj` feature.
 tobj              = { version = "4", default-features = false }
 
+# PNG / JPEG decoder for project-supplied textures (Material albedo /
+# normal / metallic-roughness / emission). Pulled in by
+# `ocarina-render`'s `texture` feature.
+image             = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
 
@@ -157,10 +162,16 @@ floem-editor-core = { path = "third_party/floem/editor-core" }
 
 [profile.dev]
 opt-level = 1              # mild opt so editor tools are responsive
-debug = true
+debug = true               # full debuginfo for our code -- breakpoints + backtraces
 
+# Dep tweaks. opt-level=3 keeps wgpu / lapce / rapier responsive in
+# debug; line-tables-only keeps backtraces useful while collapsing
+# `target/debug/deps/lib*.rlib` from ~500MB to ~50MB. The disk
+# difference adds up FAST: each lapce-app rebuild used to produce a
+# fresh ~535MB rlib, and Cargo never garbage-collects old hashes.
 [profile.dev.package."*"]
-opt-level = 3              # optimize deps so wgpu/egui aren't sluggish in debug
+opt-level = 3
+debug = "line-tables-only"
 
 [profile.release]
 lto = "thin"

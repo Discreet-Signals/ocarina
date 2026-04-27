@@ -37,6 +37,16 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
 const OUTLINE_THICKNESS_PX: f32 = 2.0;
 const OUTLINE_COLOR: vec3<f32> = vec3<f32>(1.00, 0.65, 0.20);
 
+/// Linear → sRGB encode. The renderer targets non-sRGB surfaces, so
+/// gamma encoding has to happen here rather than as a hardware
+/// sRGB-format conversion.
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let cutoff = vec3<f32>(0.0031308);
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c < cutoff);
+}
+
 // Derive the sample UV from `@builtin(position)` — the rasterizer's
 // screen-space pixel coordinate after viewport transform. Dividing by
 // the mask texture's dimensions gives the UV of THIS PIXEL in the
@@ -73,5 +83,5 @@ fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     if (alpha <= 0.0) {
         discard;
     }
-    return vec4<f32>(OUTLINE_COLOR, alpha);
+    return vec4<f32>(linear_to_srgb(OUTLINE_COLOR), alpha);
 }

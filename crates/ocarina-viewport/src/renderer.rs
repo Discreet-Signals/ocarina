@@ -16,15 +16,21 @@
 //! Held entirely on the RHI (`ocarina-rhi`), so a future Vulkan /
 //! Metal / D3D12 backend slots in without changing this file.
 
+use std::collections::HashMap;
+
 use bevy_ecs::entity::Entity;
 use floem_renderer::WgpuPassCtx;
 use glam::{Mat4, Vec3, Vec4};
 
+use ocarina_core::components::{Material, Sky};
 use ocarina_core::AssetPath;
-use ocarina_render::editor::{EditorPipelines, RenderConfig};
+use ocarina_render::editor::{EditorPipelines, PipelineLayout, RenderConfig};
+use ocarina_render::shader::ShaderRegistry;
 use ocarina_render::{
-    CameraUniform, InstanceUniform, LitPipeline, MeshHandle, MeshRegistry, ENGINE_SPHERE,
-    INSTANCE_STRIDE, MAX_INSTANCES,
+    build_lights_uniform, build_material_textures_bg, build_sky_pipeline, CameraUniform,
+    ColorSpace, DefaultPipeline, InstanceUniform, LightInstance, MaterialTextureKey,
+    MaterialUniform, MeshHandle, MeshRegistry, SkyPipeline, SkyUniform, TextureRegistry,
+    ENGINE_SPHERE, INSTANCE_STRIDE, MATERIAL_STRIDE, MATERIAL_UNIFORM_SIZE, MAX_INSTANCES,
 };
 use ocarina_rhi::{
     BindGroupDesc, BindGroupEntry, BindGroupHandle, BindGroupLayoutDesc, BindGroupLayoutEntry,
@@ -53,31 +59,30 @@ const GIZMO_2D_WGSL: &str = include_str!("../shaders/gizmo_2d.wgsl");
 // CameraUniform / InstanceUniform / INSTANCE_STRIDE / MAX_INSTANCES
 // come from `ocarina_render`. The camera UBO carries a
 // `viewport_size: Vec4` field used by the 2D gizmo shader to convert
-// pixel offsets to NDC; the lit and unlit shaders declare it for
+// pixel offsets to NDC; the default and unlit shaders declare it for
 // layout compatibility and ignore it.
 const INSTANCE_UNIFORM_SIZE: u64 = std::mem::size_of::<InstanceUniform>() as u64;
 
-/// Camera state ready to upload to the GPU. Computed by the caller —
+/// Camera state ready to upload to the GPU. Computed by the caller --
 /// the renderer doesn't know about orbit cameras (editor) vs gameplay
 /// cameras (runtime).
 #[derive(Clone, Copy)]
 pub struct ViewportCamera {
     pub view_proj: Mat4,
-    pub light_dir: Vec3,
-    /// Multiplied into per-instance tint by the fragment shader. Use
-    /// `Vec4::ONE` for "no tint, just per-instance".
-    pub base_color: Vec4,
+    /// Camera world-space position. Plumbed into the camera UBO's
+    /// `eye_pos` slot for PBR view-direction reconstruction.
+    pub eye_pos: Vec3,
 }
 
 impl ViewportCamera {
-    /// Standard daylight setup: light from above-and-behind-right,
-    /// neutral white base color.
+    /// Camera with `view_proj` set, `eye_pos` zeroed. Hosts that care
+    /// about specular shading should fill `eye_pos` from the inverse
+    /// view matrix translation column before passing to `render`.
     #[must_use]
     pub fn standard(view_proj: Mat4) -> Self {
         Self {
             view_proj,
-            light_dir: Vec3::new(0.35, 1.0, 0.85).normalize(),
-            base_color: Vec4::ONE,
+            eye_pos: Vec3::ZERO,
         }
     }
 }
@@ -98,15 +103,21 @@ pub enum RenderMode {
 pub struct EntityInstance {
     pub entity: Entity,
     pub world_xform: Mat4,
-    /// Multiplied with the camera's `base_color` and the `selected`
-    /// boost (in edit mode). Pass `Vec4::new(0.78, 0.82, 0.90, 1.0)`
-    /// for the default "neutral cool grey" Ocarina aesthetic.
+    /// Per-entity tint read by the simple-pipeline shaders (mask /
+    /// gizmo / unlit). The default scene shader reads
+    /// `material.albedo` instead -- the renderer mirrors albedo into
+    /// `tint` before upload, plus an optional editor-selection
+    /// brightness boost on top.
     pub tint: Vec4,
     /// Asset path of the entity's mesh. `None` means the entity has
     /// no `Mesh` component (e.g. a camera) and isn't drawn in the
     /// lit pass; the editor may still surface a small selection
     /// marker for it.
     pub mesh: Option<ocarina_core::AssetPath>,
+    /// PBR material parameters + texture asset paths. Defaults to
+    /// `Material::default()` when the entity has no `Material`
+    /// component.
+    pub material: Material,
 }
 
 /// Editor overlay: translate **and** rotate gizmo handles to draw at
@@ -128,9 +139,13 @@ pub struct GizmoOverlay {
 pub struct ViewportRenderer {
     rhi: WgpuRhi,
 
-    /// Lit pipeline + camera/instance UBOs + bind groups, owned by
-    /// the shared rendering core. Used for normal lit draws.
-    lit: LitPipeline,
+    /// Default scene pipeline + camera/instance UBOs + bind groups,
+    /// owned by the shared rendering core. Used for normal lit draws.
+    default_pipeline: DefaultPipeline,
+    /// 3-stop gradient sky pipeline. Runs BEFORE the lit pass when
+    /// the world has a `Sky` component, replacing the lit pass's
+    /// solid clear with a per-pixel world-space gradient.
+    sky_pipeline: SkyPipeline,
     /// Editor-only alt pipelines (wireframe + unlit). Selected via
     /// [`RenderConfig`] passed to `render()`. Compiled in here
     /// because viewport always builds with ocarina-render's
@@ -140,6 +155,18 @@ pub struct ViewportRenderer {
     /// pre-loaded; user OBJs cached on first reference. Same handle
     /// type the runtime uses, same loading path.
     meshes: MeshRegistry,
+    /// Texture registry for material albedo / normal / metallic-
+    /// roughness / emission slots. Pre-populated with 1×1 white /
+    /// black / flat-normal defaults so missing textures still bind
+    /// cleanly.
+    textures: TextureRegistry,
+    /// Shader registry: drives the per-shader pipeline cache the
+    /// `default_pipeline` looks up via [`DefaultPipeline::pipeline_for`].
+    shader_registry: ShaderRegistry,
+    /// Per-material texture bind groups, keyed by the texture handle
+    /// quadruple. Two entities with the same material textures share
+    /// one bind group; lookup is the hot path inside the entity loop.
+    material_bg_cache: HashMap<MaterialTextureKey, BindGroupHandle>,
 
     /// Mask pipeline. Re-renders the selected mesh through the
     /// `mask.wgsl` shader into a single-channel R8Unorm texture
@@ -202,25 +229,42 @@ impl ViewportRenderer {
         let target_format = wgpu_format_to_rhi(format)?;
         let mut rhi = WgpuRhi::from_existing(device, queue, adapter);
 
-        // Lit pipeline + camera/instance UBOs (shared with the
-        // runtime). After this call we never construct lit-side
-        // resources locally again.
-        let lit = ocarina_render::lit::build_lit_pipeline(
+        // Default scene pipeline + camera/instance UBOs (shared with
+        // the runtime). After this call we never construct
+        // scene-side resources locally again.
+        let default_pipeline = ocarina_render::default::build_default_pipeline(
             &mut rhi,
             target_format,
             DEPTH_FORMAT,
         )?;
 
+        // Sky pipeline: a fullscreen quad that runs first whenever
+        // the world has a `Sky` component. Owns its own UBO + bind
+        // group; doesn't share the scene pipeline's frame_bgl.
+        let sky_pipeline = build_sky_pipeline(&mut rhi, target_format, DEPTH_FORMAT)?;
+
         // Editor-only alt pipelines (wireframe, unlit). Always built
         // because the viewport always enables ocarina-render's
         // `editor` feature.
-        let editor_pipelines =
-            EditorPipelines::build(&mut rhi, &lit, target_format, DEPTH_FORMAT)?;
+        let editor_pipelines = EditorPipelines::build(
+            &mut rhi,
+            &default_pipeline,
+            target_format,
+            DEPTH_FORMAT,
+        )?;
 
         // Mesh registry. Built-ins (engine/cube, engine/sphere)
         // pre-loaded; user-asset paths cached on first reference.
         let mut meshes = MeshRegistry::new();
         meshes.register_builtins(&mut rhi)?;
+
+        // Texture registry: 1×1 white / black / flat-normal defaults
+        // pre-uploaded so a missing material texture binds cleanly.
+        let textures = TextureRegistry::new(&mut rhi)?;
+
+        // Shader registry: pre-populates `engine/shaders/default`,
+        // resolves project-relative `.wgsl` files on demand.
+        let shader_registry = ShaderRegistry::new();
 
         // 2D gizmo geometry: translate-axis line+arrow, rotate-axis
         // ring. Both are authored in a *gizmo* vertex format (see
@@ -253,15 +297,15 @@ impl ViewportRenderer {
             &mut rhi,
             gizmo_vs,
             gizmo_fs,
-            lit.camera_bgl,
-            lit.instance_bgl,
+            default_pipeline.frame_bgl,
+            default_pipeline.simple_instance_bgl,
             target_format,
         )?;
         rhi.destroy_shader(gizmo_vs);
         rhi.destroy_shader(gizmo_fs);
 
         // Mask pipeline. Same camera/instance bind groups as the
-        // lit pipeline; only the fragment output differs
+        // default scene pipeline; only the fragment output differs
         // (single-channel 1.0 into the R8Unorm mask texture).
         let mask_vs = rhi.create_shader(&ShaderDesc {
             label: Some("mask.wgsl:vs_main"),
@@ -279,8 +323,8 @@ impl ViewportRenderer {
             &mut rhi,
             mask_vs,
             mask_fs,
-            lit.camera_bgl,
-            lit.instance_bgl,
+            default_pipeline.frame_bgl,
+            default_pipeline.simple_instance_bgl,
         )?;
         rhi.destroy_shader(mask_vs);
         rhi.destroy_shader(mask_fs);
@@ -335,9 +379,13 @@ impl ViewportRenderer {
 
         Ok(Self {
             rhi,
-            lit,
+            default_pipeline,
+            sky_pipeline,
             editor_pipelines,
             meshes,
+            textures,
+            shader_registry,
+            material_bg_cache: HashMap::new(),
             mask_pipeline,
             outline_pipeline,
             gizmo_pipeline,
@@ -357,16 +405,81 @@ impl ViewportRenderer {
         })
     }
 
-    /// Set the project root used by the mesh registry to resolve
-    /// user-mesh asset paths. Call this when a project is loaded /
-    /// switched. Engine meshes (`engine/cube` etc.) work regardless.
+    /// Set the project root used by the mesh / texture / shader
+    /// registries to resolve project-relative asset paths. Call this
+    /// when a project is loaded / switched. Engine assets
+    /// (`engine/cube`, `engine/textures/white`, etc.) work regardless.
     pub fn set_project_root(&mut self, root: std::path::PathBuf) {
-        self.meshes.set_project_root(root);
+        self.meshes.set_project_root(root.clone());
+        self.textures.set_project_root(root.clone());
+        self.shader_registry.set_project_root(root);
+    }
+
+    /// Resolve `material`'s four texture slots, look up (or build)
+    /// the cached group-2 bind group, and return its handle. The
+    /// renderer calls this once per entity per frame; the cache hit
+    /// rate is high because most scenes have a handful of materials.
+    fn ensure_material_bg(&mut self, material: &Material) -> Option<BindGroupHandle> {
+        let albedo = self.textures.ensure_or_white(
+            &mut self.rhi,
+            &material.albedo_texture,
+            ColorSpace::Srgb,
+        );
+        let normal = self
+            .textures
+            .ensure_or_flat_normal(&mut self.rhi, &material.normal_texture);
+        let metallic_roughness = self.textures.ensure_or_white(
+            &mut self.rhi,
+            &material.metallic_roughness_texture,
+            ColorSpace::Linear,
+        );
+        let emission = self.textures.ensure_or_white(
+            &mut self.rhi,
+            &material.emission_texture,
+            ColorSpace::Srgb,
+        );
+        let key = MaterialTextureKey {
+            albedo,
+            normal,
+            metallic_roughness,
+            emission,
+        };
+        if let Some(h) = self.material_bg_cache.get(&key) {
+            return Some(*h);
+        }
+        match build_material_textures_bg(
+            &mut self.rhi,
+            self.default_pipeline.material_textures_bgl,
+            key,
+        ) {
+            Ok(handle) => {
+                self.material_bg_cache.insert(key, handle);
+                Some(handle)
+            }
+            Err(e) => {
+                log::warn!("viewport: material bind-group create failed: {e}");
+                None
+            }
+        }
+    }
+
+    /// Bind group for the "no material" fallback (selection marker,
+    /// future placeholder geometry). Resolves to the cached default
+    /// white-texture set.
+    fn ensure_default_material_bg(&mut self) -> Option<BindGroupHandle> {
+        self.ensure_material_bg(&Material::default())
     }
 
     /// Render `entities` into `ctx.view` at `ctx.rect` (in framebuffer
-    /// pixels). Uses `LoadOp::Load` for color so a UI compositor's
-    /// underlying paint is preserved; `LoadOp::Clear(1.0)` for depth.
+    /// pixels). Uses `LoadOp::Clear` for color (the viewport runs as
+    /// a pre-paint pass under Floem UI) and `LoadOp::Clear(1.0)` for
+    /// depth.
+    ///
+    /// `scene_shader` selects which scene shader the lit pass binds.
+    /// Pass `engine/shaders/default` for the built-in PBR shader, or
+    /// any project-relative `.wgsl` path (resolved through the
+    /// internal [`ShaderRegistry`]) to swap in a user shader. Misses
+    /// fall back to the default with a warning.
     ///
     /// `gizmo` is the editor's translate / rotate overlay drawn on
     /// top of the scene when something is selected; pass `None` to
@@ -374,6 +487,9 @@ impl ViewportRenderer {
     pub fn render(
         &mut self,
         entities: &[EntityInstance],
+        lights: &[LightInstance],
+        sky: Option<Sky>,
+        scene_shader: &AssetPath,
         ctx: &WgpuPassCtx<'_>,
         camera: ViewportCamera,
         mode: RenderMode,
@@ -483,9 +599,8 @@ impl ViewportRenderer {
 
         let cam_uniform = CameraUniform {
             view_proj: camera.view_proj,
-            light_dir: Vec4::new(camera.light_dir.x, camera.light_dir.y, camera.light_dir.z, 0.0),
-            base_color: camera.base_color,
-            // Panel rect in physical pixels — what NDC maps to after
+            eye_pos: Vec4::new(camera.eye_pos.x, camera.eye_pos.y, camera.eye_pos.z, 0.0),
+            // Panel rect in physical pixels -- what NDC maps to after
             // `set_viewport(...)`. Using `depth_w/h` (swapchain size)
             // here gave under-sized lines whenever the panel was
             // smaller than the swapchain, since the shader's
@@ -498,8 +613,33 @@ impl ViewportRenderer {
                 0.0,
             ),
         };
-        self.rhi
-            .write_buffer(self.lit.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
+        self.rhi.write_buffer(
+            self.default_pipeline.camera_buffer,
+            0,
+            bytemuck::bytes_of(&cam_uniform),
+        );
+
+        // Pack scene lights into the lights UBO. Empty list → a
+        // single fully-zeroed buffer; the shader's `count = 0` loop
+        // contributes only the ambient floor.
+        let lights_uniform = build_lights_uniform(lights);
+        self.rhi.write_buffer(
+            self.default_pipeline.lights_buffer,
+            0,
+            bytemuck::bytes_of(&lights_uniform),
+        );
+
+        // Upload the sky uniform if a Sky component is present in
+        // the world. The sky pass runs only when this happens; the
+        // lit pass below switches its LoadOp accordingly.
+        if let Some(sky) = sky {
+            let sky_uniform = SkyUniform::build(&sky, camera.view_proj, camera.eye_pos);
+            self.rhi.write_buffer(
+                self.sky_pipeline.buffer,
+                0,
+                bytemuck::bytes_of(&sky_uniform),
+            );
+        }
 
         let selected = match mode {
             RenderMode::Edit { selected_entity } => selected_entity,
@@ -507,7 +647,8 @@ impl ViewportRenderer {
         };
 
         // Resolve each entity's mesh handle and build the per-frame
-        // draw list + instance buffer. Slot layout:
+        // draw list + instance buffer + material buffer. Slot
+        // layout:
         //   [0..entity_cap)      = entity slots (one per input entity).
         //   [entity_cap..+6)     = gizmo slots (6 axes / rings).
         // An entity slot is occupied if (a) the entity has a Mesh
@@ -522,32 +663,36 @@ impl ViewportRenderer {
             slot: u32,
             mesh: MeshHandle,
             entity: Entity,
+            /// Per-material bind group for the scene pipeline's
+            /// group 2. `None` means "use default white textures"
+            /// (selection marker + gizmo geometry).
+            material_bg: Option<BindGroupHandle>,
         }
         let mut entity_draws: Vec<EntityDraw> = Vec::with_capacity(count);
+
+        // Default white material for the selection marker + gizmo
+        // entities (resolved once, cached in `material_bg_cache`).
+        let default_material_bg = self.ensure_default_material_bg();
 
         let total_slots = count + if gizmo.is_some() { GIZMO_SLOTS } else { 0 };
         if total_slots > 0 {
             let mut instance_bytes: Vec<u8> =
                 vec![0; total_slots * INSTANCE_STRIDE as usize];
+            let mut material_bytes: Vec<u8> =
+                vec![0; total_slots * MATERIAL_STRIDE as usize];
             for (i, inst) in entities.iter().take(count).enumerate() {
                 let highlight = selected == Some(inst.entity);
-                let final_tint = if highlight {
-                    inst.tint * 1.4 + Vec4::splat(0.15)
-                } else {
-                    inst.tint
-                };
 
                 // Resolve the entity's mesh (if any); for selected
                 // meshless entities, fall back to a small sphere
                 // marker so they're still pickable / visible.
-                let (model, mesh_handle) = match inst
+                let (model, mesh_handle, is_marker) = match inst
                     .mesh
                     .as_ref()
                     .and_then(|p| self.meshes.ensure(&mut self.rhi, p))
                 {
-                    Some(handle) => (inst.world_xform, Some(handle)),
+                    Some(handle) => (inst.world_xform, Some(handle), false),
                     None if highlight => {
-                        // Selection marker: small sphere at world pos.
                         let pos = inst.world_xform.col(3).truncate();
                         const MARKER_SIZE: f32 = 0.25;
                         let marker = Mat4::from_scale_rotation_translation(
@@ -558,7 +703,7 @@ impl ViewportRenderer {
                         let h = self
                             .meshes
                             .ensure(&mut self.rhi, &AssetPath::new(ENGINE_SPHERE));
-                        (marker, h)
+                        (marker, h, true)
                     }
                     None => continue,
                 };
@@ -567,17 +712,58 @@ impl ViewportRenderer {
                     continue;
                 };
 
-                let offset = i * INSTANCE_STRIDE as usize;
-                let uniform = InstanceUniform {
-                    model,
-                    tint: final_tint,
+                // Mirror albedo into the instance UBO's `tint` so the
+                // simple-pipeline shaders (mask / gizmo / unlit) and
+                // the scene shader agree on the entity's display
+                // colour. Editor selection bumps both with a
+                // brightness boost.
+                let base_albedo = inst.material.albedo;
+                let display_albedo = if highlight {
+                    base_albedo * 1.4 + Vec4::splat(0.15)
+                } else {
+                    base_albedo
                 };
-                instance_bytes[offset..offset + INSTANCE_UNIFORM_SIZE as usize]
-                    .copy_from_slice(bytemuck::bytes_of(&uniform));
+
+                let instance_uniform = InstanceUniform {
+                    model,
+                    tint: display_albedo,
+                };
+                let material_uniform = if is_marker {
+                    // Selection marker is a small "you are here"
+                    // sphere; doesn't deserve the entity's PBR
+                    // material. Render flat-coloured.
+                    let mut m = MaterialUniform::neutral();
+                    m.albedo = display_albedo;
+                    m
+                } else {
+                    let mut m = MaterialUniform::from_component(&inst.material);
+                    if highlight {
+                        m.albedo = display_albedo;
+                    }
+                    m
+                };
+
+                let inst_off = i * INSTANCE_STRIDE as usize;
+                instance_bytes[inst_off..inst_off + INSTANCE_UNIFORM_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(&instance_uniform));
+                let mat_off = i * MATERIAL_STRIDE as usize;
+                material_bytes[mat_off..mat_off + MATERIAL_UNIFORM_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(&material_uniform));
+
+                // Per-material textures bind group. Marker uses
+                // defaults; real entities resolve their material
+                // texture set through the cache.
+                let material_bg = if is_marker {
+                    default_material_bg
+                } else {
+                    self.ensure_material_bg(&inst.material)
+                };
+
                 entity_draws.push(EntityDraw {
                     slot: i as u32,
                     mesh: handle,
                     entity: inst.entity,
+                    material_bg,
                 });
             }
             if let Some(g) = gizmo {
@@ -592,9 +778,12 @@ impl ViewportRenderer {
                         base
                     };
                     let uniform = InstanceUniform { model, tint };
-                    let offset = (count + slot) * INSTANCE_STRIDE as usize;
-                    instance_bytes[offset..offset + INSTANCE_UNIFORM_SIZE as usize]
+                    let off = (count + slot) * INSTANCE_STRIDE as usize;
+                    instance_bytes[off..off + INSTANCE_UNIFORM_SIZE as usize]
                         .copy_from_slice(bytemuck::bytes_of(&uniform));
+                    // Gizmo draws go through the simple pipeline so
+                    // material UBO is never read; leaving the slot
+                    // zeroed is fine.
                 };
                 for (i, axis) in Axis::ALL.iter().enumerate() {
                     write(i, translate_axis_model(g.origin, *axis, g.scale_world), *axis);
@@ -603,23 +792,41 @@ impl ViewportRenderer {
                     write(3 + i, rotate_ring_model(g.origin, *axis, g.scale_world), *axis);
                 }
             }
-            self.rhi.write_buffer(self.lit.instance_buffer, 0, &instance_bytes);
+            self.rhi
+                .write_buffer(self.default_pipeline.instance_buffer, 0, &instance_bytes);
+            self.rhi
+                .write_buffer(self.default_pipeline.material_buffer, 0, &material_bytes);
         }
 
         // ─── Now resolve all the wgpu objects we need for the
         // render pass. All of these are immutable borrows from the
         // RHI's pools — fine to hold simultaneously. ──────────────
 
+        // Pipeline selection -- done up front so any pipeline-cache
+        // build (Stage 9: alternative scene shaders selected via
+        // `RenderSettings`) lands BEFORE we acquire any immutable
+        // RHI borrows for the render pass below. RenderMode::Play
+        // uses the [`RenderSettings`]-driven scene shader (full PBR
+        // layout); edit mode honours the editor toggles -- wireframe
+        // still takes the scene path, "lighting off" drops to the
+        // simple unlit pipeline.
+        let (main_pipeline_handle, main_layout) = match mode {
+            RenderMode::Play => {
+                let h = self.default_pipeline.pipeline_for(
+                    &mut self.rhi,
+                    &mut self.shader_registry,
+                    scene_shader,
+                );
+                (h, PipelineLayout::Scene)
+            }
+            RenderMode::Edit { .. } => {
+                let _ = scene_shader; // editor mode ignores it for now
+                config.select_pipeline(&self.default_pipeline, &self.editor_pipelines)
+            }
+        };
+
         let Some(depth_view) = self.rhi.texture_view(depth) else {
             return;
-        };
-        // RenderMode::Play forces lit (this is the actual game look).
-        // Edit mode honours the editor toggles.
-        let main_pipeline_handle = match mode {
-            RenderMode::Play => self.lit.pipeline,
-            RenderMode::Edit { .. } => {
-                config.select_pipeline(&self.lit, &self.editor_pipelines)
-            }
         };
         let Some(pipeline) = self.rhi.graphics_pipeline(main_pipeline_handle) else {
             return;
@@ -632,17 +839,46 @@ impl ViewportRenderer {
         else {
             return;
         };
-        let Some(camera_bg) = self.rhi.bind_group(self.lit.camera_bg) else {
+        let Some(frame_bg) = self.rhi.bind_group(self.default_pipeline.frame_bg) else {
             return;
         };
-        let Some(instance_bg) = self.rhi.bind_group(self.lit.instance_bg) else {
+        let Some(scene_instance_bg) =
+            self.rhi.bind_group(self.default_pipeline.instance_bg)
+        else {
             return;
         };
-        // Resolve every entity-draw's wgpu vb/ib upfront so the
-        // render-pass loop can borrow them all simultaneously
-        // (RHI returns immutable borrows out of the same pool).
-        let mut resolved_draws: Vec<(u32, &wgpu::Buffer, &wgpu::Buffer, u32)> =
-            Vec::with_capacity(entity_draws.len());
+        let Some(simple_instance_bg) =
+            self.rhi.bind_group(self.default_pipeline.simple_instance_bg)
+        else {
+            return;
+        };
+        // Sky pipeline + bind group. Always resolved (we created
+        // them in `from_existing`); the actual sky pass below only
+        // runs when `sky` is `Some`.
+        let sky_runs = sky.is_some();
+        let sky_pipeline = if sky_runs {
+            self.rhi.graphics_pipeline(self.sky_pipeline.pipeline)
+        } else {
+            None
+        };
+        let sky_bg = if sky_runs {
+            self.rhi.bind_group(self.sky_pipeline.bg)
+        } else {
+            None
+        };
+        let do_sky = sky_runs && sky_pipeline.is_some() && sky_bg.is_some();
+        // Resolve every entity-draw's wgpu vb/ib + per-material
+        // bind group upfront so the render-pass loop can borrow them
+        // all simultaneously (RHI returns immutable borrows out of
+        // the same pool).
+        struct Resolved<'a> {
+            slot: u32,
+            vb: &'a wgpu::Buffer,
+            ib: &'a wgpu::Buffer,
+            index_count: u32,
+            material_bg: Option<&'a wgpu::BindGroup>,
+        }
+        let mut resolved_draws: Vec<Resolved<'_>> = Vec::with_capacity(entity_draws.len());
         for d in &entity_draws {
             let Some(vb) = self.rhi.buffer(d.mesh.vertex_buffer) else {
                 continue;
@@ -650,7 +886,14 @@ impl ViewportRenderer {
             let Some(ib) = self.rhi.buffer(d.mesh.index_buffer) else {
                 continue;
             };
-            resolved_draws.push((d.slot, vb, ib, d.mesh.index_count));
+            let material_bg = d.material_bg.and_then(|bg| self.rhi.bind_group(bg));
+            resolved_draws.push(Resolved {
+                slot: d.slot,
+                vb,
+                ib,
+                index_count: d.mesh.index_count,
+                material_bg,
+            });
         }
         let Some(translate_axis_vb) = self.rhi.buffer(self.translate_axis_vb) else {
             return;
@@ -680,14 +923,15 @@ impl ViewportRenderer {
         let outline_draw: Option<(u32, &wgpu::Buffer, &wgpu::Buffer, u32)> = match mode {
             RenderMode::Edit {
                 selected_entity: Some(sel),
-            } => entity_draws
+            } => resolved_draws
                 .iter()
-                .find(|d| d.entity == sel)
-                .and_then(|d| {
-                    let vb = self.rhi.buffer(d.mesh.vertex_buffer)?;
-                    let ib = self.rhi.buffer(d.mesh.index_buffer)?;
-                    Some((d.slot, vb, ib, d.mesh.index_count))
-                }),
+                .find(|r| {
+                    entity_draws
+                        .iter()
+                        .find(|d| d.slot == r.slot)
+                        .map_or(false, |d| d.entity == sel)
+                })
+                .map(|r| (r.slot, r.vb, r.ib, r.index_count)),
             _ => None,
         };
         let do_outline =
@@ -716,24 +960,62 @@ impl ViewportRenderer {
                 label: Some("ocarina viewport encoder"),
             });
 
-        // ─── Lit pass: scene → swapchain color. The viewport runs
-        // as a *pre-paint* pass (under Floem UI), so it owns the
-        // backbuffer's clear -- LoadOp::Clear initialises the whole
-        // swapchain to the editor background; the UI scene encoded
-        // by Vger afterwards uses LoadOp::Load to paint on top. ───
+        // ─── Sky pass: fullscreen gradient quad. Runs FIRST when
+        // the world has a `Sky` component; replaces the lit pass's
+        // solid clear with a per-pixel world-space gradient. The
+        // lit pass below detects this via `do_sky` and switches its
+        // LoadOp from Clear to Load so it paints on top. ─────────
+        if do_sky {
+            let sky_pipeline_obj = sky_pipeline.unwrap();
+            let sky_bg_obj = sky_bg.unwrap();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ocarina viewport sky pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: ctx.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_viewport(viewport.0, viewport.1, viewport.2, viewport.3, 0.0, 1.0);
+            pass.set_scissor_rect(sx, sy, sw, sh);
+            pass.set_pipeline(sky_pipeline_obj);
+            pass.set_bind_group(0, sky_bg_obj, &[]);
+            pass.draw(0..6, 0..1);
+        }
+
+        // ─── Lit pass: scene → swapchain color. When the sky pass
+        // ran first, this pass loads the existing colour (so geometry
+        // overdraws the gradient where it covers); otherwise it
+        // clears to a fixed editor-grey background. ─────────────
         {
+            let lit_color_load = if do_sky {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: 0.07,
+                    g: 0.09,
+                    b: 0.12,
+                    a: 1.0,
+                })
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ocarina viewport lit pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: ctx.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.07,
-                            g: 0.09,
-                            b: 0.12,
-                            a: 1.0,
-                        }),
+                        load: lit_color_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -751,17 +1033,39 @@ impl ViewportRenderer {
             pass.set_viewport(viewport.0, viewport.1, viewport.2, viewport.3, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, camera_bg, &[]);
-            // One draw per resolved entity. Bind the entity's mesh
-            // before each draw -- entities can have different meshes
-            // (built-in cube, built-in sphere, user OBJ, ...) so we
-            // can't share buffers across the loop.
-            for (slot, vb, ib, index_count) in &resolved_draws {
-                let dyn_offset = (*slot as u64 * INSTANCE_STRIDE) as u32;
-                pass.set_bind_group(1, instance_bg, &[dyn_offset]);
-                pass.set_vertex_buffer(0, vb.slice(..));
-                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..*index_count, 0, 0..1);
+            pass.set_bind_group(0, frame_bg, &[]);
+            // One draw per resolved entity. Branch by pipeline
+            // layout: scene (default + wireframe) binds the
+            // instance + material UBOs at group 1 and the per-
+            // material textures at group 2. Simple (unlit) binds
+            // only the instance UBO.
+            match main_layout {
+                PipelineLayout::Scene => {
+                    for r in &resolved_draws {
+                        let inst_off = (u64::from(r.slot) * INSTANCE_STRIDE) as u32;
+                        let mat_off = (u64::from(r.slot) * MATERIAL_STRIDE) as u32;
+                        pass.set_bind_group(
+                            1,
+                            scene_instance_bg,
+                            &[inst_off, mat_off],
+                        );
+                        if let Some(bg) = r.material_bg {
+                            pass.set_bind_group(2, bg, &[]);
+                        }
+                        pass.set_vertex_buffer(0, r.vb.slice(..));
+                        pass.set_index_buffer(r.ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..r.index_count, 0, 0..1);
+                    }
+                }
+                PipelineLayout::Simple => {
+                    for r in &resolved_draws {
+                        let inst_off = (u64::from(r.slot) * INSTANCE_STRIDE) as u32;
+                        pass.set_bind_group(1, simple_instance_bg, &[inst_off]);
+                        pass.set_vertex_buffer(0, r.vb.slice(..));
+                        pass.set_index_buffer(r.ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..r.index_count, 0, 0..1);
+                    }
+                }
             }
         }
 
@@ -800,9 +1104,9 @@ impl ViewportRenderer {
                 pass.set_viewport(viewport.0, viewport.1, viewport.2, viewport.3, 0.0, 1.0);
                 pass.set_scissor_rect(sx, sy, sw, sh);
                 pass.set_pipeline(mask_pipeline);
-                pass.set_bind_group(0, camera_bg, &[]);
+                pass.set_bind_group(0, frame_bg, &[]);
                 let dyn_offset = (u64::from(outline_slot) * INSTANCE_STRIDE) as u32;
-                pass.set_bind_group(1, instance_bg, &[dyn_offset]);
+                pass.set_bind_group(1, simple_instance_bg, &[dyn_offset]);
                 pass.set_vertex_buffer(0, outline_vb.slice(..));
                 pass.set_index_buffer(outline_ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..outline_index_count, 0, 0..1);
@@ -869,14 +1173,14 @@ impl ViewportRenderer {
             pass.set_viewport(viewport.0, viewport.1, viewport.2, viewport.3, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
             pass.set_pipeline(gizmo_pipeline);
-            pass.set_bind_group(0, camera_bg, &[]);
+            pass.set_bind_group(0, frame_bg, &[]);
 
             // Translate axes: 3 instances of the line+arrow mesh.
             pass.set_vertex_buffer(0, translate_axis_vb.slice(..));
             pass.set_index_buffer(translate_axis_ib.slice(..), wgpu::IndexFormat::Uint32);
             for i in 0..3u32 {
                 let dyn_offset = ((count as u64 + u64::from(i)) * INSTANCE_STRIDE) as u32;
-                pass.set_bind_group(1, instance_bg, &[dyn_offset]);
+                pass.set_bind_group(1, simple_instance_bg, &[dyn_offset]);
                 pass.draw_indexed(0..self.translate_axis_index_count, 0, 0..1);
             }
 
@@ -886,7 +1190,7 @@ impl ViewportRenderer {
             for i in 0..3u32 {
                 let dyn_offset =
                     ((count as u64 + 3 + u64::from(i)) * INSTANCE_STRIDE) as u32;
-                pass.set_bind_group(1, instance_bg, &[dyn_offset]);
+                pass.set_bind_group(1, simple_instance_bg, &[dyn_offset]);
                 pass.draw_indexed(0..self.rotate_ring_index_count, 0, 0..1);
             }
         }

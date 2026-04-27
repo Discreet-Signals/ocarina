@@ -50,13 +50,14 @@ use floem::{
     action::exec_after,
     event::{Event, EventListener},
     kurbo::{Point, Rect, Size},
-    reactive::{RwSignal, SignalGet, SignalUpdate},
+    reactive::{RwSignal, SignalGet, SignalUpdate, SignalWith},
     style::CursorStyle,
     views::{Decorators, canvas},
 };
 use floem_renderer::WgpuPassCtx;
 use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
-use ocarina_core::components::{Material, Mesh, Transform};
+use ocarina_core::components::{Material, Mesh, Sky, Transform};
+use ocarina_core::AssetPath;
 use ocarina_scene::Scene;
 
 pub use camera::OrbitCamera;
@@ -517,10 +518,11 @@ impl PanelState {
             return;
         };
 
-        // Build entity instance list + gizmo overlay (if anything is
-        // selected and resolvable). Both walk `world_transforms`, so
-        // we share the borrow.
-        let (entities, gizmo_origin, project_root) = scene
+        // Build entity instance list + scene lights + sky + active
+        // scene shader + gizmo overlay if anything is selected. All
+        // five walk the same world / world_transforms so we share
+        // the borrow.
+        let (entities, lights, sky, scene_shader, gizmo_origin, project_root) = scene
             .map(|scene| {
                 let mut scene = scene.borrow_mut();
                 let xforms = scene.world_transforms();
@@ -530,9 +532,35 @@ impl PanelState {
                 let project_root = scene.root_dir.clone();
                 let world = &mut scene.world;
                 let entities = build_entity_instances_from(&xforms, world);
-                (entities, origin, Some(project_root))
+                let lights =
+                    ocarina_render::collect_lights_from_world(world, &xforms);
+                // First entity with a Sky component wins. There's no
+                // ordering rule beyond entity-id; if the project
+                // ships multiple Sky entities the renderer just
+                // picks one and ignores the rest.
+                let sky = {
+                    use bevy_ecs::entity::Entity;
+                    let mut q = world.query::<(Entity, &Sky)>();
+                    q.iter(world).next().map(|(_, s)| *s)
+                };
+                let scene_shader = world
+                    .get_resource::<ocarina_render::RenderSettings>()
+                    .map(|s| s.default_shader.clone())
+                    .unwrap_or_else(|| {
+                        AssetPath::new(ocarina_render::ENGINE_SHADER_DEFAULT)
+                    });
+                (entities, lights, sky, scene_shader, origin, Some(project_root))
             })
-            .unwrap_or_else(|| (Vec::new(), None, None));
+            .unwrap_or_else(|| {
+                (
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    AssetPath::new(ocarina_render::ENGINE_SHADER_DEFAULT),
+                    None,
+                    None,
+                )
+            });
 
         // Keep the mesh registry's project root in sync with the
         // current scene so user OBJs resolve to the right files.
@@ -544,7 +572,10 @@ impl PanelState {
         // panel rect (which `WgpuPassCtx::rect` carries in pixels).
         let aspect = (ctx.rect.width() / ctx.rect.height().max(1.0)) as f32;
         let view_proj = self.camera.view_projection(aspect);
-        let camera = ViewportCamera::standard(view_proj);
+        let camera = ViewportCamera {
+            view_proj,
+            eye_pos: self.camera.position(),
+        };
 
         let gizmo = gizmo_origin.map(|origin| GizmoOverlay {
             origin,
@@ -553,7 +584,17 @@ impl PanelState {
         });
 
         let mode = RenderMode::Edit { selected_entity };
-        renderer.render(&entities, ctx, camera, mode, gizmo, self.render_config);
+        renderer.render(
+            &entities,
+            &lights,
+            sky,
+            &scene_shader,
+            ctx,
+            camera,
+            mode,
+            gizmo,
+            self.render_config,
+        );
     }
 }
 
@@ -834,14 +875,238 @@ fn build_entity_instances_from(
             .get::<Mesh>(*entity)
             .map(|m| m.source.clone())
             .filter(|p| !p.is_empty());
-        let tint = world.get::<Material>(*entity).map_or(DEFAULT_TINT, |m| m.tint);
+        let material = world
+            .get::<Material>(*entity)
+            .cloned()
+            .unwrap_or_default();
+        // Mirror albedo into `tint` so the simple-pipeline shaders
+        // (mask / gizmo / unlit) and the scene shader land on the
+        // same display colour. `DEFAULT_TINT` is the fallback for
+        // entities with no Material at all -- a soft cool grey that
+        // reads as "unstyled object" rather than blown-out white.
+        let tint = if world.get::<Material>(*entity).is_some() {
+            material.albedo
+        } else {
+            DEFAULT_TINT
+        };
         instances.push(EntityInstance {
             entity: *entity,
             world_xform: *world_xform,
             tint,
             mesh: mesh_path,
+            material,
         });
     }
     instances.sort_by_key(|i| i.entity);
     instances
+}
+
+// ─────────────────────────── Camera viewport panel ───────────────────────────
+
+/// Build a Floem `View` that renders the scene from a specific
+/// scene-camera entity's perspective. Used by the editor's
+/// "per-camera viewport tabs" feature: each `Camera` component in
+/// the scene gets its own panel tab, and clicking that tab swaps in
+/// this view.
+///
+/// Locked-down compared to [`viewport_panel`]:
+///   - No orbit / pan / scroll camera.
+///   - No mesh picking.
+///   - No selection markers / gizmo overlay.
+///   - No keyboard movement.
+///   - Renders in `RenderMode::Play` so the editor highlight tweaks
+///     don't apply.
+///
+/// `entity_bits` is the camera entity's `Entity::to_bits()` value.
+/// If the entity has been removed (the parent sync system normally
+/// drops the panel tab in that case, but mid-frame races are
+/// possible), the canvas paints nothing for that frame.
+pub fn camera_viewport_panel(
+    scene_signal: SceneSignal,
+    entity_bits: u64,
+) -> impl View {
+    let state = Rc::new(RefCell::new(CameraPanelState::new(entity_bits)));
+
+    let frame_tick = RwSignal::new(0u64);
+    spawn_camera_repaint_loop(frame_tick);
+
+    canvas({
+        let state = state.clone();
+        move |cx, size| {
+            frame_tick.get();
+            let scene = scene_signal.get();
+
+            state.borrow_mut().last_size = size;
+
+            let local_rect = Rect::ZERO.with_size(size);
+            let state = state.clone();
+            let pass: floem_renderer::WgpuPass = Box::new(move |ctx: WgpuPassCtx<'_>| {
+                let mut state = state.borrow_mut();
+                state.render_frame(&ctx, scene.as_ref());
+            });
+            cx.submit_pre_paint_wgpu_pass(local_rect, pass);
+        }
+    })
+    .style(|s| s.size_full().cursor(CursorStyle::Default))
+}
+
+/// Per-tab state for [`camera_viewport_panel`]. Stripped-down
+/// compared to [`PanelState`] since there's no editor input to track.
+struct CameraPanelState {
+    entity_bits: u64,
+    renderer: Option<ViewportRenderer>,
+    last_size: Size,
+}
+
+impl CameraPanelState {
+    fn new(entity_bits: u64) -> Self {
+        Self {
+            entity_bits,
+            renderer: None,
+            last_size: Size::ZERO,
+        }
+    }
+
+    fn ensure_renderer(&mut self, ctx: &WgpuPassCtx<'_>) {
+        if let Some(renderer) = &self.renderer {
+            if renderer.matches_target_format(ctx.format) {
+                return;
+            }
+            self.renderer = None;
+        }
+        match ViewportRenderer::from_existing(
+            ctx.device.clone(),
+            ctx.queue.clone(),
+            ctx.adapter,
+            ctx.format,
+        ) {
+            Ok(r) => self.renderer = Some(r),
+            Err(e) => {
+                log::error!("ocarina-viewport: camera renderer init failed: {e}");
+            }
+        }
+    }
+
+    fn render_frame(
+        &mut self,
+        ctx: &WgpuPassCtx<'_>,
+        scene: Option<&Rc<RefCell<Scene>>>,
+    ) {
+        self.ensure_renderer(ctx);
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let Some(scene) = scene else { return };
+
+        // Resolve the camera entity from its bits, gather the scene
+        // payload + the camera's world transform / Camera component.
+        let target_entity = bevy_ecs::entity::Entity::from_bits(self.entity_bits);
+        let (entities, lights, sky, scene_shader, view_proj, eye_pos, project_root) = {
+            use ocarina_core::components::{Camera as CameraComp, Transform as TransformComp};
+            let mut scene = scene.borrow_mut();
+            let xforms = scene.world_transforms();
+            let project_root = scene.root_dir.clone();
+            let world = &mut scene.world;
+
+            // Resolve the camera entity. The world's `entities()`
+            // table is the authoritative source of validity; we
+            // use `world.get_entity(...)` to confirm liveness, then
+            // pull components.
+            let cam_xform = xforms.get(&target_entity).copied();
+            let _ = world.get::<TransformComp>(target_entity); // touch transform component import path
+            let cam_comp = world.get::<CameraComp>(target_entity).copied();
+            let (cam_xform, cam_comp) = match (cam_xform, cam_comp) {
+                (Some(x), Some(c)) => (x, c),
+                _ => return,
+            };
+
+            let aspect = (ctx.rect.width() / ctx.rect.height().max(1.0)) as f32;
+            let view = cam_xform.inverse();
+            let proj = glam::Mat4::perspective_rh(
+                cam_comp.fov_y.to_radians(),
+                aspect,
+                cam_comp.near,
+                cam_comp.far,
+            );
+            let view_proj = proj * view;
+            let eye_pos = cam_xform.col(3).truncate();
+
+            let entities = build_entity_instances_from(&xforms, world);
+            let lights = ocarina_render::collect_lights_from_world(world, &xforms);
+            let sky = {
+                use bevy_ecs::entity::Entity;
+                let mut q = world.query::<(Entity, &Sky)>();
+                q.iter(world).next().map(|(_, s)| *s)
+            };
+            let scene_shader = world
+                .get_resource::<ocarina_render::RenderSettings>()
+                .map(|s| s.default_shader.clone())
+                .unwrap_or_else(|| AssetPath::new(ocarina_render::ENGINE_SHADER_DEFAULT));
+            (
+                entities,
+                lights,
+                sky,
+                scene_shader,
+                view_proj,
+                eye_pos,
+                Some(project_root),
+            )
+        };
+
+        if let Some(root) = project_root {
+            renderer.set_project_root(root);
+        }
+
+        let camera = ViewportCamera { view_proj, eye_pos };
+        // Editor toggles intentionally never reach this path; we
+        // always render the "shipped game look" through the scene
+        // pipeline. No gizmo overlay either -- there's nothing to
+        // pick / select / move from this view.
+        let render_config = ocarina_render::editor::RenderConfig::default();
+        renderer.render(
+            &entities,
+            &lights,
+            sky,
+            &scene_shader,
+            ctx,
+            camera,
+            RenderMode::Play,
+            None,
+            render_config,
+        );
+    }
+}
+
+/// Recursive 16 ms tick that drives the camera viewport's repaints.
+/// No movement / input integration -- the camera viewport is a pure
+/// observer of scene state.
+fn spawn_camera_repaint_loop(frame_tick: RwSignal<u64>) {
+    exec_after(Duration::from_millis(16), move |_| {
+        frame_tick.update(|v| *v = v.wrapping_add(1));
+        spawn_camera_repaint_loop(frame_tick);
+    });
+}
+
+/// Walk the scene's `World` for `Camera` component entities and
+/// return their `Entity::to_bits()` ids (sorted, stable). Used by
+/// the editor's per-camera panel-tab sync to know which `CameraView`
+/// tabs should currently be present.
+///
+/// Returns an empty vec when no scene is loaded.
+pub fn collect_camera_entity_bits(scene_signal: &SceneSignal) -> Vec<u64> {
+    use ocarina_core::components::Camera;
+    scene_signal.with_untracked(|maybe_scene| {
+        maybe_scene
+            .as_ref()
+            .map(|scene| {
+                let mut scene = scene.borrow_mut();
+                let world = &mut scene.world;
+                let mut q = world.query::<(Entity, &Camera)>();
+                let mut bits: Vec<u64> =
+                    q.iter(world).map(|(e, _)| e.to_bits()).collect();
+                bits.sort_unstable();
+                bits
+            })
+            .unwrap_or_default()
+    })
 }

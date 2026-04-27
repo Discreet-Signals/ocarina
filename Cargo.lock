@@ -4797,8 +4797,10 @@ dependencies = [
 name = "ocarina-render"
 version = "0.1.0"
 dependencies = [
+ "bevy_ecs",
  "bytemuck",
  "glam 0.30.10",
+ "image",
  "log",
  "ocarina-core",
  "ocarina-rhi",
