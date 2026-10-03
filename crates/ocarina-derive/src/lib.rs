@@ -24,7 +24,7 @@ use syn::{
 /// `#[derive(Component)]` with optional `#[ocarina(...)]` field attrs.
 ///
 /// Accepted field-level attributes:
-/// - `#[ocarina(widget = "vec3" | "color" | "euler_rotation" | "scalar" | "path")]`
+/// - `#[ocarina(widget = "vec3" | "color" | "euler_rotation" | "scalar" | "path" | "path_array")]`
 /// - `#[ocarina(default = "[1.0, 1.0, 1.0]")]` -- verbatim TOML literal
 /// - `#[ocarina(name = "custom_section_name")]` on the struct to override
 ///   the derived snake_case section name.
@@ -336,7 +336,7 @@ fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<(String, Option<St
                 let s: LitStr = meta.value()?.parse()?;
                 widget = normalize_widget(&s.value()).ok_or_else(|| {
                     meta.error(
-                        "unknown widget; expected: auto | scalar | vec3 | euler_rotation | color | path",
+                        "unknown widget; expected: auto | scalar | vec3 | euler_rotation | color | path | path_array",
                     )
                 })?;
                 Ok(())
@@ -361,6 +361,7 @@ fn normalize_widget(raw: &str) -> Option<String> {
             "euler_rotation" | "euler" => "EulerRotation",
             "color" => "Color",
             "path" => "Path",
+            "path_array" => "PathArray",
             _ => return None,
         }
         .to_string(),

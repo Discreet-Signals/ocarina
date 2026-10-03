@@ -59,6 +59,11 @@ pub fn interpret(
                     .textures
                     .get(dst.raw().slot, dst.raw().generation)
                     .ok_or(RhiError::InvalidHandle("TextureHandle (copy dst)"))?;
+                let d_tex = d.texture.as_ref().ok_or_else(|| {
+                    RhiError::Backend(
+                        "CopyBufferToTexture: dst is an external view (no parent texture)".into(),
+                    )
+                })?;
                 encoder.copy_buffer_to_texture(
                     wgpu::TexelCopyBufferInfo {
                         buffer: s,
@@ -69,7 +74,7 @@ pub fn interpret(
                         },
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &d.texture,
+                        texture: d_tex,
                         mip_level: dst_region.mip_level,
                         origin: wgpu::Origin3d {
                             x: dst_region.origin[0],
@@ -101,9 +106,14 @@ pub fn interpret(
                     .buffers
                     .get(dst.raw().slot, dst.raw().generation)
                     .ok_or(RhiError::InvalidHandle("BufferHandle (copy dst)"))?;
+                let s_tex = s.texture.as_ref().ok_or_else(|| {
+                    RhiError::Backend(
+                        "CopyTextureToBuffer: src is an external view (no parent texture)".into(),
+                    )
+                })?;
                 encoder.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
-                        texture: &s.texture,
+                        texture: s_tex,
                         mip_level: src_region.mip_level,
                         origin: wgpu::Origin3d {
                             x: src_region.origin[0],
@@ -141,9 +151,19 @@ pub fn interpret(
                     .textures
                     .get(dst.raw().slot, dst.raw().generation)
                     .ok_or(RhiError::InvalidHandle("TextureHandle (copy dst)"))?;
+                let s_tex = s.texture.as_ref().ok_or_else(|| {
+                    RhiError::Backend(
+                        "CopyTextureToTexture: src is an external view (no parent texture)".into(),
+                    )
+                })?;
+                let d_tex = d.texture.as_ref().ok_or_else(|| {
+                    RhiError::Backend(
+                        "CopyTextureToTexture: dst is an external view (no parent texture)".into(),
+                    )
+                })?;
                 encoder.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {
-                        texture: &s.texture,
+                        texture: s_tex,
                         mip_level: src_region.mip_level,
                         origin: wgpu::Origin3d {
                             x: src_region.origin[0],
@@ -153,7 +173,7 @@ pub fn interpret(
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &d.texture,
+                        texture: d_tex,
                         mip_level: dst_region.mip_level,
                         origin: wgpu::Origin3d {
                             x: dst_region.origin[0],
@@ -362,12 +382,16 @@ fn run_render_pass(
             Command::Draw {
                 vertices,
                 instances,
-            } => pass.draw(vertices.clone(), instances.clone()),
+            } => pass.draw(vertices.start..vertices.end, instances.start..instances.end),
             Command::DrawIndexed {
                 indices,
                 base_vertex,
                 instances,
-            } => pass.draw_indexed(indices.clone(), *base_vertex, instances.clone()),
+            } => pass.draw_indexed(
+                indices.start..indices.end,
+                *base_vertex,
+                instances.start..instances.end,
+            ),
             Command::DrawIndirect { buffer, offset } => {
                 let buf = pools
                     .buffers

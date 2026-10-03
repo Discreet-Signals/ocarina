@@ -1,0 +1,43 @@
+[package]
+name = "ocarina-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shared rendering core for Ocarina: lit pipeline, mesh registry (built-in primitives + OBJ), camera/instance UBO formats. RHI-backed (no direct wgpu calls). Editor-only features (wireframe, unlit, custom-shader hooks) live behind the `editor` feature so the runtime binary contains only the runtime path."
+
+[dependencies]
+ocarina-rhi.workspace = true
+ocarina-core.workspace = true
+ocarina-shader.workspace = true
+
+bevy_ecs.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+naga.workspace = true
+thiserror.workspace = true
+
+
+# OBJ asset loader. Optional; the engine's built-in Box / Sphere
+# meshes are always available even without this feature.
+tobj = { workspace = true, optional = true }
+
+# PNG / JPEG decoder for material textures. Optional; PBR materials
+# without textures still render via solid scalar / color values.
+image = { workspace = true, optional = true }
+
+[features]
+# Default-on: every shipped game expects to load OBJ meshes and PNG
+# textures from the project folder.
+default = ["obj", "texture"]
+obj = ["dep:tobj"]
+texture = ["dep:image"]
+# Editor-only feature gate. Wireframe pipeline, unlit shader,
+# RenderConfig toggles, custom-shader hot path. The runtime binary
+# builds with this OFF and the entire editor render-path machinery
+# is `cfg`-gated out: zero pipelines, zero fields, zero branches.
+editor = []
+
+[lints]
+workspace = true

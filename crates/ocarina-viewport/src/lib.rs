@@ -26,13 +26,13 @@
 
 mod camera;
 mod gizmo;
-mod mesh;
 mod renderer;
 mod transform_io;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 // Force-link ocarina-physics so its `#[derive(Component)]`
@@ -57,7 +57,6 @@ use floem::{
 use floem_renderer::WgpuPassCtx;
 use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
 use ocarina_core::components::{Material, Mesh, Sky, Transform};
-use ocarina_core::AssetPath;
 use ocarina_scene::Scene;
 
 pub use camera::OrbitCamera;
@@ -546,9 +545,7 @@ impl PanelState {
                 let scene_shader = world
                     .get_resource::<ocarina_render::RenderSettings>()
                     .map(|s| s.default_shader.clone())
-                    .unwrap_or_else(|| {
-                        AssetPath::new(ocarina_render::ENGINE_SHADER_DEFAULT)
-                    });
+                    .unwrap_or_else(ocarina_render::engine_default_shader_path);
                 (entities, lights, sky, scene_shader, origin, Some(project_root))
             })
             .unwrap_or_else(|| {
@@ -556,7 +553,7 @@ impl PanelState {
                     Vec::new(),
                     Vec::new(),
                     None,
-                    AssetPath::new(ocarina_render::ENGINE_SHADER_DEFAULT),
+                    ocarina_render::engine_default_shader_path(),
                     None,
                     None,
                 )
@@ -584,6 +581,13 @@ impl PanelState {
         });
 
         let mode = RenderMode::Edit { selected_entity };
+        // The editor's main viewport never applies a user post-
+        // process shader — the orbit camera isn't tied to an ECS
+        // entity, so there's nowhere for a `Camera::post_process`
+        // path to live. The renderer's compositor pass still runs
+        // (offscreen → identity passthrough → ctx.view); only the
+        // dedicated camera tabs in the play view honor the user
+        // shader.
         renderer.render(
             &entities,
             &lights,
@@ -594,6 +598,7 @@ impl PanelState {
             mode,
             gizmo,
             self.render_config,
+            &[],
         );
     }
 }
@@ -1001,7 +1006,16 @@ impl CameraPanelState {
         // Resolve the camera entity from its bits, gather the scene
         // payload + the camera's world transform / Camera component.
         let target_entity = bevy_ecs::entity::Entity::from_bits(self.entity_bits);
-        let (entities, lights, sky, scene_shader, view_proj, eye_pos, project_root) = {
+        let (
+            entities,
+            lights,
+            sky,
+            scene_shader,
+            view_proj,
+            eye_pos,
+            project_root,
+            post_process,
+        ) = {
             use ocarina_core::components::{Camera as CameraComp, Transform as TransformComp};
             let mut scene = scene.borrow_mut();
             let xforms = scene.world_transforms();
@@ -1014,7 +1028,10 @@ impl CameraPanelState {
             // pull components.
             let cam_xform = xforms.get(&target_entity).copied();
             let _ = world.get::<TransformComp>(target_entity); // touch transform component import path
-            let cam_comp = world.get::<CameraComp>(target_entity).copied();
+            // `Camera` is no longer `Copy` (it now owns an
+            // `AssetPath` for `post_process`), so clone the
+            // component out of the world rather than `.copied()`.
+            let cam_comp = world.get::<CameraComp>(target_entity).cloned();
             let (cam_xform, cam_comp) = match (cam_xform, cam_comp) {
                 (Some(x), Some(c)) => (x, c),
                 _ => return,
@@ -1038,10 +1055,26 @@ impl CameraPanelState {
                 let mut q = world.query::<(Entity, &Sky)>();
                 q.iter(world).next().map(|(_, s)| *s)
             };
-            let scene_shader = world
-                .get_resource::<ocarina_render::RenderSettings>()
-                .map(|s| s.default_shader.clone())
-                .unwrap_or_else(|| AssetPath::new(ocarina_render::ENGINE_SHADER_DEFAULT));
+            // Camera-local `scene_shader` overrides the global
+            // default. Empty path = "use the global", which is the
+            // `RenderSettings::default_shader` resource if attached,
+            // or the engine's built-in PBR shader otherwise. The
+            // renderer's `pipeline_for` already falls back to default
+            // on compile errors, so a typo'd path doesn't black-out
+            // the camera.
+            let scene_shader = if cam_comp.scene_shader.is_empty() {
+                world
+                    .get_resource::<ocarina_render::RenderSettings>()
+                    .map(|s| s.default_shader.clone())
+                    .unwrap_or_else(ocarina_render::engine_default_shader_path)
+            } else {
+                Arc::new(cam_comp.scene_shader.clone())
+            };
+            // Pull the camera's post-process shader path out of its
+            // component. The renderer uses this to pick the right
+            // compositor pipeline; empty path falls back to the
+            // identity passthrough so the screen never goes black.
+            let post_process = cam_comp.post_process.clone();
             (
                 entities,
                 lights,
@@ -1050,6 +1083,7 @@ impl CameraPanelState {
                 view_proj,
                 eye_pos,
                 Some(project_root),
+                post_process,
             )
         };
 
@@ -1073,6 +1107,7 @@ impl CameraPanelState {
             RenderMode::Play,
             None,
             render_config,
+            &post_process,
         );
     }
 }

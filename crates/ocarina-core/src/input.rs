@@ -43,7 +43,7 @@ pub enum MouseButton {
     Other(u16),
 }
 
-#[derive(Debug, Default, Resource)]
+#[derive(Debug, Resource)]
 pub struct Input {
     keys_held: HashSet<Key>,
     keys_just_pressed: HashSet<Key>,
@@ -56,6 +56,31 @@ pub struct Input {
     mouse_pos: Vec2,
     mouse_delta: Vec2,
     scroll: Vec2,
+
+    // Cursor intent. Scripts write these via `grab_cursor` /
+    // `show_cursor`; the host reads them after `tick` and asks the
+    // window to grab/release and toggle visibility. Persistent state,
+    // so end_frame leaves them alone.
+    cursor_grabbed: bool,
+    cursor_visible: bool,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self {
+            keys_held: HashSet::new(),
+            keys_just_pressed: HashSet::new(),
+            keys_just_released: HashSet::new(),
+            mouse_held: HashSet::new(),
+            mouse_just_pressed: HashSet::new(),
+            mouse_just_released: HashSet::new(),
+            mouse_pos: Vec2::ZERO,
+            mouse_delta: Vec2::ZERO,
+            scroll: Vec2::ZERO,
+            cursor_grabbed: false,
+            cursor_visible: true,
+        }
+    }
 }
 
 impl Input {
@@ -97,6 +122,31 @@ impl Input {
     #[must_use]
     pub fn scroll(&self) -> Vec2 {
         self.scroll
+    }
+    /// Whether the script wants the cursor grabbed (locked or confined
+    /// to the window). Hosts read this after each tick and apply.
+    #[must_use]
+    pub fn cursor_grabbed(&self) -> bool {
+        self.cursor_grabbed
+    }
+    /// Whether the script wants the cursor visible. Hosts read this
+    /// after each tick and apply.
+    #[must_use]
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+
+    // ── Cursor intent (used by scripts) ──
+
+    /// Ask the host to grab the cursor (true) or release it (false).
+    /// Combined with `show_cursor(false)` this is the FPS mouse-look
+    /// setup; combined with `show_cursor(true)` it's the menu setup.
+    pub fn grab_cursor(&mut self, grab: bool) {
+        self.cursor_grabbed = grab;
+    }
+    /// Ask the host to show (true) or hide (false) the cursor.
+    pub fn show_cursor(&mut self, visible: bool) {
+        self.cursor_visible = visible;
     }
 
     // ── Write API (used by the host before each tick) ──

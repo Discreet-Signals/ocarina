@@ -1,0 +1,44 @@
+# Empty `[workspace]` so cargo treats this generated host as a
+# standalone package even when it's nested inside another workspace
+# (the engine repo, in `examples/`-style demo projects).
+[workspace]
+
+[package]
+name = "@@NAME@@"
+version = "@@VERSION@@"
+edition = "2024"
+license = "@@LICENSE@@"
+description = "@@DESCRIPTION@@"
+
+[[bin]]
+name = "@@NAME@@"
+path = "src/main.rs"
+
+[dependencies]
+# Engine baseline -- always linked. Path-deps point at the engine
+# workspace this generated crate was produced against; regenerated
+# whenever Ocarina.toml or the engine root changes.
+ocarina-core         = { path = "@@ENGINE_ROOT@@/crates/ocarina-core" }
+ocarina-runtime      = { path = "@@ENGINE_ROOT@@/crates/ocarina-runtime", features = ["windowed"] }
+ocarina-gameplay-api = { path = "@@ENGINE_ROOT@@/crates/ocarina-gameplay-api" }
+ocarina-physics      = { path = "@@ENGINE_ROOT@@/crates/ocarina-physics" }
+anyhow     = "1"
+log        = "0.4"
+env_logger = "0.11"
+
+# User-supplied dependencies from Ocarina.toml [dependencies]. Names
+# starting with `ocarina-` are rewritten to engine path-deps; all
+# others pass through verbatim.
+@@USER_DEPS@@
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -24,12 +24,19 @@
 pub mod builtins;
 pub mod default;
 pub mod mesh;
+pub mod reflect;
+pub mod scene_renderer;
 pub mod shader;
 pub mod sky;
 pub mod texture;
 
+pub use scene_renderer::{EntityInstance, SceneArgs, SceneRenderer, ViewportCamera, DEPTH_FORMAT};
+
 #[cfg(feature = "editor")]
 pub mod editor;
+
+#[cfg(feature = "editor")]
+pub mod editor_overlays;
 
 pub use default::{
     build_lights_uniform, build_material_textures_bg, build_scene_pipeline_against,
@@ -42,7 +49,8 @@ pub use mesh::{
     MeshAsset, MeshHandle, MeshRegistry, Vertex, ENGINE_CUBE, ENGINE_PREFIX, ENGINE_SPHERE,
 };
 pub use shader::{
-    RenderSettings, ShaderRegistry, ShaderSource, ENGINE_SHADER_DEFAULT, ENGINE_SHADER_PREFIX,
+    engine_default_shader_path, RenderSettings, ShaderRegistry, ShaderSource,
+    ENGINE_SHADER_DEFAULT, ENGINE_SHADER_PREFIX,
 };
 pub use sky::{build_sky_pipeline, SkyPipeline, SkyUniform, SKY_UNIFORM_SIZE};
 pub use texture::{

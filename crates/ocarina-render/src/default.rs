@@ -402,27 +402,54 @@ pub struct DefaultPipeline {
     pub camera_bgl: BindGroupLayoutHandle,
     pub camera_bg: BindGroupHandle,
 
-    /// Lazily-built pipelines keyed by scene-shader path. The
-    /// `engine/shaders/default` entry is pre-populated. Adding a
-    /// project-supplied shader is one `build_scene_pipeline_for`
-    /// call.
-    pub pipeline_cache: HashMap<AssetPath, PipelineHandle>,
+    /// Lazily-built pipelines keyed by scene-shader path. Each entry
+    /// stores the pipeline handle plus a 64-bit hash of the WGSL
+    /// source it was built from -- on every `pipeline_for` call we
+    /// re-read the file and compare hashes so save-then-render
+    /// triggers a hot-recompile without requiring a TOML change.
+    pub pipeline_cache: HashMap<AssetPath, ScenePipelineCacheEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ScenePipelineCacheEntry {
+    pub pipeline: PipelineHandle,
+    pub source_hash: u64,
+}
+
+fn hash_wgsl(s: &str) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    h.write(s.as_bytes());
+    h.finish()
 }
 
 impl DefaultPipeline {
     /// Return the pipeline handle for `shader_path`, building it on
-    /// first request. Returns the built-in default if the lookup
-    /// fails (engine/shader registry handles the warning).
+    /// first request and rebuilding if the on-disk source changed
+    /// since the last call. Returns the built-in default if the
+    /// build fails (engine/shader registry handles the warning).
     pub fn pipeline_for(
         &mut self,
         rhi: &mut dyn Rhi,
         registry: &mut crate::shader::ShaderRegistry,
         shader_path: &AssetPath,
     ) -> PipelineHandle {
-        if let Some(h) = self.pipeline_cache.get(shader_path) {
-            return *h;
-        }
+        // Re-read the source so a save in the user's editor shows
+        // up immediately. The registry's source cache is for cross-
+        // consumer sharing, not a hot-reload barrier.
+        registry.invalidate(shader_path);
         let source = registry.ensure_or_default(shader_path);
+        let current_hash = hash_wgsl(&source.wgsl);
+        if let Some(entry) = self.pipeline_cache.get(shader_path) {
+            if entry.source_hash == current_hash {
+                return entry.pipeline;
+            }
+            // Source changed on disk. Drop the stale pipeline so its
+            // wgpu module / pipeline can be released before the
+            // rebuild below allocates a fresh one.
+            let stale = self.pipeline_cache.remove(shader_path).unwrap();
+            rhi.destroy_pipeline(stale.pipeline);
+        }
         match build_scene_pipeline_against(
             rhi,
             self.frame_bgl,
@@ -438,7 +465,13 @@ impl DefaultPipeline {
             },
         ) {
             Ok(handle) => {
-                self.pipeline_cache.insert(shader_path.clone(), handle);
+                self.pipeline_cache.insert(
+                    shader_path.clone(),
+                    ScenePipelineCacheEntry {
+                        pipeline: handle,
+                        source_hash: current_hash,
+                    },
+                );
                 handle
             }
             Err(e) => {
@@ -666,9 +699,17 @@ pub fn build_default_pipeline(
     )?;
 
     let mut pipeline_cache = HashMap::new();
+    // The engine default shader is built-in; its source is the
+    // bundled `default.wgsl` constant, never re-read from disk.
+    // Hash it once so the hot-reload path's hash compare is happy
+    // (it'll always match itself, so the cache always hits).
+    let default_source_hash = hash_wgsl(crate::shader::ENGINE_DEFAULT_WGSL);
     pipeline_cache.insert(
         AssetPath::new(crate::shader::ENGINE_SHADER_DEFAULT),
-        pipeline,
+        ScenePipelineCacheEntry {
+            pipeline,
+            source_hash: default_source_hash,
+        },
     );
 
     Ok(DefaultPipeline {

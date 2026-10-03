@@ -43,7 +43,7 @@ pub fn reload_full(scene: &mut Scene) -> LoadReport {
     scene.dir_entity.clear();
     scene
         .dir_entity
-        .insert(scene.root_dir.clone(), scene.root);
+        .insert((*scene.root_dir).clone(), scene.root);
     scene.file_entity.clear();
     // Also strip components from the root entity -- we re-add them below.
     // Pragmatic approach: despawn + respawn the root so no stale
@@ -53,10 +53,11 @@ pub fn reload_full(scene: &mut Scene) -> LoadReport {
     scene.root = scene.world.spawn_empty().id();
     scene
         .dir_entity
-        .insert(scene.root_dir.clone(), scene.root);
+        .insert((*scene.root_dir).clone(), scene.root);
 
     let mut report = LoadReport::default();
-    walk_and_load(scene, &scene.root_dir.clone(), &mut report);
+    let root = scene.root_dir.clone();
+    walk_and_load(scene, &root, &mut report);
     report
 }
 
@@ -73,7 +74,7 @@ pub fn reload_file(scene: &mut Scene, path: &Path) -> Result<(), SceneError> {
         return Ok(());
     }
     let path = canonical(path);
-    let parent_dir = path.parent().unwrap_or(&scene.root_dir).to_path_buf();
+    let parent_dir = path.parent().unwrap_or(scene.root_dir.as_path()).to_path_buf();
     let entity = scene.entity_for_dir(&parent_dir);
     apply_toml_file(scene, entity, &path)?;
     scene.file_entity.insert(path, entity);
@@ -88,7 +89,7 @@ pub fn reload_file(scene: &mut Scene, path: &Path) -> Result<(), SceneError> {
 pub fn remove_file(scene: &mut Scene, path: &Path) -> LoadReport {
     let path = canonical(path);
     scene.file_entity.remove(&path);
-    let parent_dir = path.parent().unwrap_or(&scene.root_dir).to_path_buf();
+    let parent_dir = path.parent().unwrap_or(scene.root_dir.as_path()).to_path_buf();
     let entity = match scene.dir_entity.get(&parent_dir) {
         Some(&e) => e,
         None => return LoadReport::default(),

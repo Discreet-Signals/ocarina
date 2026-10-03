@@ -26,7 +26,7 @@ pub const ENGINE_SHADER_PREFIX: &str = "engine/shaders/";
 /// stage 7: full PBR over the lights buffer).
 pub const ENGINE_SHADER_DEFAULT: &str = "engine/shaders/default";
 
-const ENGINE_DEFAULT_WGSL: &str = include_str!("../shaders/default.wgsl");
+pub(crate) const ENGINE_DEFAULT_WGSL: &str = include_str!("../shaders/default.wgsl");
 
 // ─────────────────────────── Shader source ───────────────────────────
 
@@ -56,7 +56,9 @@ pub struct ShaderSource {
 /// shader means destroying the old pipeline and building a new one
 /// against the new source.
 pub struct ShaderRegistry {
-    project_root: Option<std::path::PathBuf>,
+    /// Wrapped in `Arc` so the per-frame `set_project_root` call from
+    /// the viewport is a refcount bump, not a deep `PathBuf` clone.
+    project_root: Option<Arc<std::path::PathBuf>>,
     cache: HashMap<AssetPath, Arc<ShaderSource>>,
     /// Failures we've already logged so we don't spam every frame.
     failed: HashSet<AssetPath>,
@@ -82,8 +84,42 @@ impl ShaderRegistry {
         }
     }
 
-    pub fn set_project_root(&mut self, root: std::path::PathBuf) {
+    pub fn set_project_root(&mut self, root: Arc<std::path::PathBuf>) {
         self.project_root = Some(root);
+    }
+
+    /// Resolve `path` to its absolute on-disk location using the
+    /// configured project root. Returns `None` if the registry has
+    /// no project root set or the path is empty / engine-namespaced
+    /// (engine shaders are baked-in and don't have a disk file).
+    /// Used by callers that need to stat the source file (e.g. for
+    /// mtime-based hot-reload).
+    #[must_use]
+    pub fn resolve_path(&self, path: &AssetPath) -> Option<std::path::PathBuf> {
+        if path.is_empty() || path.as_str().starts_with(ENGINE_SHADER_PREFIX) {
+            return None;
+        }
+        self.project_root.as_ref().map(|root| path.resolve(root.as_path()))
+    }
+
+    /// Drop the cached source for `path` so the next call to
+    /// [`Self::ensure`] re-reads the file from disk. Also clears any
+    /// remembered failure for that path. Used by hot-reload -- the
+    /// source file's mtime changed, so any compiled pipeline tied to
+    /// the old text needs to come down too (the caller is responsible
+    /// for that; the registry is just the source-text cache).
+    pub fn invalidate(&mut self, path: &AssetPath) {
+        // Engine-namespaced shaders are built-in via `include_str!`,
+        // not loaded from disk. Removing them from the cache would
+        // strand the `ensure_or_default` fallback (which expects the
+        // engine default to always be cached) and panic on the next
+        // lookup. Hot-reload doesn't apply to baked-in shaders, so
+        // skip them here.
+        if path.is_empty() || path.as_str().starts_with(ENGINE_SHADER_PREFIX) {
+            return;
+        }
+        self.cache.remove(path);
+        self.failed.remove(path);
     }
 
     /// Resolve an asset path to a shader source. Returns `None` for
@@ -145,7 +181,7 @@ impl ShaderRegistry {
             .project_root
             .as_ref()
             .ok_or(ShaderLoadError::NoProjectRoot)?;
-        let absolute = path.resolve(root);
+        let absolute = path.resolve(root.as_path());
         let ext = absolute
             .extension()
             .and_then(|e| e.to_str())
@@ -207,13 +243,29 @@ pub struct RenderSettings {
     /// through [`ShaderRegistry::ensure_or_default`], so an unknown
     /// path silently falls back to the built-in default and the
     /// renderer keeps drawing.
-    pub default_shader: AssetPath,
+    ///
+    /// Wrapped in `Arc` so per-frame consumers (the runtime / viewport
+    /// render passes that pull this off the world to drive
+    /// `pipeline_for`) refcount-bump rather than deep-cloning a
+    /// `String` every frame.
+    pub default_shader: Arc<AssetPath>,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
         Self {
-            default_shader: AssetPath::new(ENGINE_SHADER_DEFAULT),
+            default_shader: engine_default_shader_path(),
         }
     }
+}
+
+/// Process-wide shared `Arc<AssetPath>` for the engine default shader.
+/// Materialised once and handed back on every fallback so the per-frame
+/// "no `RenderSettings` resource present" path doesn't allocate a fresh
+/// `AssetPath` each frame.
+#[must_use]
+pub fn engine_default_shader_path() -> Arc<AssetPath> {
+    static CELL: std::sync::OnceLock<Arc<AssetPath>> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| Arc::new(AssetPath::new(ENGINE_SHADER_DEFAULT)))
+        .clone()
 }

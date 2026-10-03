@@ -25,6 +25,8 @@ pub mod listener;
 pub mod lsp;
 pub mod main_split;
 pub mod markdown;
+pub mod ocarina_completions;
+pub mod ocarina_sdk;
 pub mod palette;
 pub mod panel;
 pub mod plugin;

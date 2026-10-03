@@ -111,6 +111,10 @@ pub enum Focus {
 pub enum DragContent {
     Panel(PanelKind),
     EditorTab(EditorTabChild),
+    /// A file or folder dragged from the file explorer. Dropping it
+    /// onto another folder row (or the panel root) issues a rename
+    /// from this path to `target_dir/<filename>` via the proxy.
+    FilePath(std::path::PathBuf),
 }
 
 impl DragContent {
@@ -892,6 +896,41 @@ impl WindowTabData {
             }
             NewFile => {
                 self.main_split.new_file();
+            }
+            OcarinaConfigureSdk => {
+                let mut options = FileDialogOptions::new()
+                    .title("Choose your Ocarina SDK directory")
+                    .select_directories();
+                if let Some(saved) = crate::ocarina_sdk::read_configured_sdk() {
+                    if let Some(parent) = saved.parent() {
+                        options = options.force_starting_directory(parent);
+                    }
+                }
+                open_file(options, move |result| {
+                    let Some(mut result) = result else { return };
+                    let Some(picked) = result.path.pop() else {
+                        tracing::error!("ocarina sdk picker: empty path");
+                        return;
+                    };
+                    if !crate::ocarina_sdk::looks_like_sdk(&picked) {
+                        tracing::error!(
+                            "selected directory `{}` is not an Ocarina SDK \
+                             (no `bin/ocarina` underneath)",
+                            picked.display()
+                        );
+                        return;
+                    }
+                    if let Err(e) = crate::ocarina_sdk::write_configured_sdk(&picked) {
+                        tracing::error!(
+                            "failed to save SDK selection to ~/.ocarina/config.toml: {e}"
+                        );
+                        return;
+                    }
+                    tracing::info!(
+                        "configured Ocarina SDK -> {}",
+                        picked.display()
+                    );
+                });
             }
             RevealActiveFileInFileExplorer => {
                 if let Some(editor_data) = self.main_split.active_editor.get() {

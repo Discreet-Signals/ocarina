@@ -21,6 +21,7 @@ mod capability;
 mod command;
 mod convert;
 mod destroy;
+mod pipeline_compiler;
 mod pool;
 mod rhi;
 

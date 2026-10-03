@@ -937,39 +937,68 @@ impl PaletteData {
         items.sort_by_key(|(executed, _item)| std::cmp::Reverse(executed.copied()));
         let mut final_items: im::Vector<PaletteItem> = im::Vector::new();
 
-        // Ocarina: top-of-list shortcuts that compile + optionally
-        // launch the project's binary via cargo. They piggyback on
-        // the existing RunAndDebug pipeline (output streams to the
-        // terminal panel) — no new InternalCommand needed.
+        // Ocarina: top-of-list entries for the run/play palette.
+        // Three rows, in order:
+        //
+        //   1. "SDK: <label>" or "SDK: None (click to select)" --
+        //      always present. Click opens the folder picker.
+        //   2. "Ocarina: Build" -- only when an SDK is resolved.
+        //   3. "Ocarina: Run"   -- only when an SDK is resolved.
+        //
+        // When no SDK is configured, Build / Run are intentionally
+        // omitted so the user cannot click into a silent failure.
+        // The only path forward is the SDK row's folder picker.
         if let Some(workspace_path) = self.workspace.path.as_ref() {
-            for (label, args) in [
-                ("Build", vec!["build".into(), "--release".into()]),
-                ("Run", vec!["run".into(), "--release".into()]),
-            ] {
-                let config = lapce_rpc::dap_types::RunDebugConfig {
-                    ty: None,
-                    name: format!("Ocarina: {label}"),
-                    program: "cargo".into(),
-                    args: Some(args),
-                    cwd: workspace_path.to_str().map(str::to_owned),
-                    env: None,
-                    prelaunch: None,
-                    debug_command: None,
-                    dap_id: lapce_rpc::dap_types::DapId::default(),
-                    tracing_output: false,
-                    config_source: lapce_rpc::dap_types::ConfigSource::Palette,
-                };
-                final_items.push_back(PaletteItem {
-                    content: PaletteItemContent::RunAndDebug {
-                        mode: RunDebugMode::Run,
-                        config,
-                    },
-                    // Prefix `ocarina` so a user typing "ocar",
-                    // "build", or "run" lands on these immediately.
-                    filter_text: format!("ocarina {label}"),
-                    score: 0,
-                    indices: vec![],
-                });
+            let resolved = crate::ocarina_sdk::locate_sdk();
+
+            // (1) SDK status row, always present.
+            let sdk_filter_text = match resolved.as_ref() {
+                Some(sdk) => format!(
+                    "SDK: {}    ({})",
+                    crate::ocarina_sdk::sdk_label(&sdk.root),
+                    sdk.root.display(),
+                ),
+                None => "SDK: None    (click to select)".to_string(),
+            };
+            final_items.push_back(PaletteItem {
+                content: PaletteItemContent::PaletteHelp {
+                    cmd: crate::command::LapceWorkbenchCommand::OcarinaConfigureSdk,
+                },
+                filter_text: sdk_filter_text,
+                score: 0,
+                indices: vec![],
+            });
+
+            // (2) + (3) Build / Run, only when SDK is resolved.
+            if let Some(sdk) = resolved {
+                let ocarina_program = sdk.cli.to_string_lossy().into_owned();
+                for (label, args) in [
+                    ("Build", vec!["build".into(), workspace_path.to_string_lossy().into_owned()]),
+                    ("Run", vec!["run".into(), workspace_path.to_string_lossy().into_owned()]),
+                ] {
+                    let config = lapce_rpc::dap_types::RunDebugConfig {
+                        ty: None,
+                        name: format!("Ocarina: {label}"),
+                        program: ocarina_program.clone(),
+                        args: Some(args),
+                        cwd: workspace_path.to_str().map(str::to_owned),
+                        env: None,
+                        prelaunch: None,
+                        debug_command: None,
+                        dap_id: lapce_rpc::dap_types::DapId::default(),
+                        tracing_output: false,
+                        config_source: lapce_rpc::dap_types::ConfigSource::Palette,
+                    };
+                    final_items.push_back(PaletteItem {
+                        content: PaletteItemContent::RunAndDebug {
+                            mode: RunDebugMode::Run,
+                            config,
+                        },
+                        filter_text: format!("ocarina {label}"),
+                        score: 0,
+                        indices: vec![],
+                    });
+                }
             }
         }
 

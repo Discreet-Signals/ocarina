@@ -196,7 +196,7 @@ fn default_emission_strength() -> f32 {
 }
 
 /// A camera. Exactly one active camera is used to render the scene.
-#[derive(Component, Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Component, Debug, Clone, Serialize, Deserialize)]
 pub struct Camera {
     /// Vertical field of view, degrees.
     #[ocarina(default = "55.0")]
@@ -212,6 +212,109 @@ pub struct Camera {
     #[ocarina(default = "1000.0")]
     #[serde(default = "default_far")]
     pub far: f32,
+
+    /// Per-camera override for the main scene (lit) shader. An empty
+    /// path means "use the global default" -- either the
+    /// `RenderSettings::default_shader` resource if one is attached
+    /// to the world, or the engine's built-in PBR shader otherwise.
+    ///
+    /// ```toml
+    /// scene_shader = "assets/shaders/toon.wgsl"
+    /// ```
+    ///
+    /// The same shader runs for every entity drawn through this
+    /// camera; per-mesh shader overrides are a separate (future)
+    /// `[shader]` component on the entity. If the path fails to
+    /// compile, the renderer logs once and falls back to the
+    /// default so the camera never blacks out.
+    #[ocarina(widget = "path")]
+    #[serde(default)]
+    pub scene_shader: AssetPath,
+
+    /// Post-process shader chain applied to this camera's
+    /// framebuffer after the lit / sky / outline / gizmo passes
+    /// finish. Each entry references a `.wgsl` file under the
+    /// project (resolved through the engine's `ShaderRegistry`); an
+    /// empty list means "no post-process, pass scene through
+    /// unchanged".
+    ///
+    /// Passes run in order. Shaders are *order-agnostic*: the only
+    /// scene-input binding is `input_color`, which the renderer
+    /// hooks up to the lit scene on the first pass and to the
+    /// previous pass's current-frame output on every pass after.
+    /// `prev_color` is a separate slot carrying THIS shader's
+    /// last-frame output -- the feedback channel that CRT phosphor
+    /// persistence, motion blur, and IIR temporal filters use.
+    /// The last pass's output is blitted to the swapchain.
+    ///
+    /// Authored as either a single string or a list:
+    ///
+    /// ```toml
+    /// post_process = "assets/shaders/grayscale.wgsl"
+    /// # or
+    /// post_process = [
+    ///     "assets/shaders/crt_buffer.wgsl",
+    ///     "assets/shaders/crt_display.wgsl",
+    /// ]
+    /// ```
+    ///
+    /// Bind-group contract per pass (engine-managed):
+    ///   - `@group(0) @binding(0) var input_color: texture_2d<f32>`
+    ///   - `@group(0) @binding(1) var prev_color:  texture_2d<f32>`
+    ///   - `@group(0) @binding(2) var samp:        sampler`
+    ///   - `@group(1) @binding(0) var<uniform> uniforms: PostUniforms`
+    ///
+    /// User-declared uniforms / textures / storage scratch land in
+    /// `@group(2)` and are reflected automatically from the WGSL
+    /// (no sidecar TOML). Group 0 bindings 3+ are free for
+    /// additional user textures / samplers if a shader needs more.
+    #[ocarina(widget = "path_array")]
+    #[serde(default, deserialize_with = "deserialize_post_process")]
+    pub post_process: Vec<AssetPath>,
+}
+
+/// Accept either a single string or a list of strings for
+/// `post_process`. Single-string form is sugar for a one-pass chain;
+/// list form is the general case. Both deserialize into
+/// `Vec<AssetPath>`, with empty / blank entries dropped.
+fn deserialize_post_process<'de, D>(d: D) -> Result<Vec<AssetPath>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct PostProcessVisitor;
+    impl<'de> Visitor<'de> for PostProcessVisitor {
+        type Value = Vec<AssetPath>;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a string or a list of strings (post-process shader paths)")
+        }
+        fn visit_str<E: de::Error>(self, s: &str) -> Result<Self::Value, E> {
+            if s.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![AssetPath::new(s)])
+            }
+        }
+        fn visit_string<E: de::Error>(self, s: String) -> Result<Self::Value, E> {
+            self.visit_str(&s)
+        }
+        fn visit_seq<A: SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                if !s.is_empty() {
+                    out.push(AssetPath::new(&s));
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    d.deserialize_any(PostProcessVisitor)
 }
 
 fn default_fov() -> f32 {
@@ -230,6 +333,8 @@ impl Default for Camera {
             fov_y: default_fov(),
             near: default_near(),
             far: default_far(),
+            scene_shader: AssetPath::default(),
+            post_process: Vec::new(),
         }
     }
 }

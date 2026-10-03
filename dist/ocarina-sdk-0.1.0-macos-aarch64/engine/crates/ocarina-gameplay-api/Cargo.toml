@@ -1,0 +1,18 @@
+[package]
+name = "ocarina-gameplay-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Public API for Ocarina gameplay code: Script trait, Context, registration. Plus the legacy FFI surface for cdylib hot-reload."
+
+[dependencies]
+# Engine-side primitives the script API hands to user code.
+ocarina-core.workspace = true
+ocarina-derive.workspace = true
+bevy_ecs.workspace = true
+inventory.workspace = true
+glam.workspace = true
+
+[lints]
+workspace = true

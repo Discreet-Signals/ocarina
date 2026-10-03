@@ -1,0 +1,21 @@
+[package]
+name = "ocarina-scene"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Folder-first scene loader: walks a project directory, parses TOML files, populates a bevy_ecs World, and watches for filesystem changes."
+
+[dependencies]
+ocarina-schema.workspace = true
+ocarina-core.workspace = true
+bevy_ecs.workspace = true
+toml.workspace = true
+notify.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

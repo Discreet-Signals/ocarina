@@ -1,0 +1,28 @@
+[package]
+name = "ocarina-physics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Physics components + rapier3d solver bridge for Ocarina. Components are engine-native (no rapier types in their public surface) so authoring crates depending on them stay light."
+
+[dependencies]
+ocarina-core.workspace = true
+ocarina-schema.workspace = true
+bevy_ecs.workspace = true
+glam.workspace = true
+serde.workspace = true
+log.workspace = true
+
+# Solver-side deps: only pulled in when the `solver` feature is on.
+# Tools that just need to know the component schema (the LSP, the
+# `ocarina schema` JSON dump) can depend on this crate with
+# `default-features = false` to skip rapier entirely.
+rapier3d = { workspace = true, optional = true }
+
+[features]
+default = ["solver"]
+solver = ["dep:rapier3d"]
+
+[lints]
+workspace = true

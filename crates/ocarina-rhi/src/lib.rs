@@ -57,11 +57,12 @@ pub use handle::{
     SamplerHandle, ShaderHandle, SwapchainHandle, TextureHandle,
 };
 pub use pipeline::{
-    BlendComponent, BlendFactor, BlendOperation, BlendState, ColorTargetState, ColorWrites,
-    ComputePipelineDesc, DepthBias, DepthStencilState, Face, FragmentStage, FrontFace,
-    GraphicsPipelineDesc, MultisampleState, PipelineDesc, PipelineKind, PolygonMode,
-    PrimitiveState, PrimitiveTopology, PushConstantRange, StencilFaceState, StencilOp,
-    VertexAttribute, VertexBufferLayout, VertexStage, VertexStepMode,
+    AsyncPipelineCompletion, AsyncPipelineId, BlendComponent, BlendFactor, BlendOperation,
+    BlendState, ColorTargetState, ColorWrites, ComputePipelineDesc, DepthBias,
+    DepthStencilState, Face, FragmentStage, FrontFace, GraphicsPipelineDesc,
+    MultisampleState, PipelineDesc, PipelineKind, PolygonMode, PrimitiveState,
+    PrimitiveTopology, PushConstantRange, StencilFaceState, StencilOp, VertexAttribute,
+    VertexBufferLayout, VertexStage, VertexStepMode,
 };
 pub use resource::{
     AddressMode, BorderColor, BufferDesc, BufferUsage, CompareFunction, FilterMode,
@@ -98,6 +99,37 @@ pub trait Rhi {
     ) -> RhiResult<BindGroupLayoutHandle>;
     fn create_bind_group(&mut self, desc: &BindGroupDesc<'_>) -> RhiResult<BindGroupHandle>;
     fn create_pipeline(&mut self, desc: &PipelineDesc<'_>) -> RhiResult<PipelineHandle>;
+
+    /// Submit a graphics pipeline build for backend-managed async
+    /// compilation. Returns immediately with an opaque
+    /// [`AsyncPipelineId`]; the actual [`PipelineHandle`] (or compile
+    /// error) becomes available via the next call to
+    /// [`Self::poll_async_pipelines`].
+    ///
+    /// Backends decide where the work runs: the wgpu backend uses an
+    /// internal worker thread so `create_render_pipeline`'s
+    /// 50-500 ms driver compile doesn't block the render thread on
+    /// shader hot-reload; the null backend resolves synchronously
+    /// and stages the result for the next poll. Either way, callers
+    /// get a stable trait-level shape.
+    ///
+    /// Compute pipelines are not yet supported on this path; passing
+    /// a compute desc is a programming error and the implementation
+    /// is allowed to panic or return an error on the next poll.
+    fn create_pipeline_async(&mut self, desc: &PipelineDesc<'_>) -> AsyncPipelineId;
+
+    /// Drain async pipeline builds completed since the last call.
+    /// Each entry's `id` matches an [`AsyncPipelineId`] previously
+    /// returned by [`Self::create_pipeline_async`]; successful builds
+    /// yield a [`PipelineHandle`] adopted into this RHI's pool, which
+    /// behaves identically to one from [`Self::create_pipeline`]
+    /// (resolves through `graphics_pipeline`, must be released with
+    /// `destroy_pipeline`).
+    ///
+    /// Order is implementation-defined. Callers should match by id,
+    /// not position.
+    fn poll_async_pipelines(&mut self) -> Vec<AsyncPipelineCompletion>;
+
     fn create_swapchain(&mut self, desc: &SwapchainDesc<'_>) -> RhiResult<SwapchainHandle>;
 
     // ── Resource destruction (deferred) ──

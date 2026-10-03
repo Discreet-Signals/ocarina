@@ -1,0 +1,15 @@
+[package]
+name = "ocarina-shader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shader compilation wrappers. HLSL → SPIR-V via DXC; passthrough for WGSL."
+
+[dependencies]
+hassle-rs.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

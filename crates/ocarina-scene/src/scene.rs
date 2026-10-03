@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::world::World;
@@ -35,8 +36,11 @@ pub enum SceneError {
 pub struct Scene {
     /// The `bevy_ecs` world. Public so callers can query / iterate it.
     pub world: World,
-    /// Filesystem root this scene was loaded from.
-    pub root_dir: PathBuf,
+    /// Filesystem root this scene was loaded from. Wrapped in `Arc`
+    /// so per-frame consumers (the viewport renderer's
+    /// `set_project_root` call) can refcount-bump rather than
+    /// deep-cloning a `PathBuf` every frame.
+    pub root_dir: Arc<PathBuf>,
     /// Entity corresponding to `root_dir`.
     pub root: Entity,
     /// directory path → entity.
@@ -67,7 +71,7 @@ impl Scene {
         dir_entity.insert(root_dir.clone(), root);
         Self {
             world,
-            root_dir,
+            root_dir: Arc::new(root_dir),
             root,
             dir_entity,
             file_entity: HashMap::new(),
@@ -180,7 +184,7 @@ impl Scene {
         let parent_dir: PathBuf = dir
             .parent()
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root_dir.clone());
+            .unwrap_or_else(|| (*self.root_dir).clone());
         let _parent_entity = if parent_dir == dir {
             self.root
         } else {

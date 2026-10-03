@@ -1,0 +1,17 @@
+[name]
+value = "sky"
+
+# 3-stop gradient skybox. Top is a clean morning blue, horizon a
+# warm haze, bottom a darker dusk-fog. Crank `intensity` past 1 if
+# the sky reads too dim against the lit scene; the shader does its
+# own gamma encode at the end so the values here are linear.
+#
+# `horizon_falloff` controls how sharp the horizon line is: 1 = soft
+# linear blend, 2-3 = recognisable horizon line, higher pulls it
+# into a tight band.
+[sky]
+top_color       = [0,0,0]#[0.32, 0.55, 0.88]#[0.6, 0.4, 0.33]
+horizon_color   = [0,0,0]#[0.92, 0.78, 0.55]#[0.2, 0.1, 0.13]
+bottom_color    = [0,0,0]#[0.06, 0.07, 0.10]#[0.0, 0.0, 0.0]
+horizon_falloff = 2.5
+intensity       = 1.2

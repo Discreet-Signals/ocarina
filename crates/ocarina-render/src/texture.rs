@@ -19,6 +19,7 @@
 //! [`MeshRegistry`](crate::mesh::MeshRegistry) uses.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use ocarina_core::AssetPath;
 use ocarina_rhi::{
@@ -72,10 +73,17 @@ pub const ENGINE_TEXTURE_NORMAL: &str = "engine/textures/normal";
 /// construction; user textures load and cache the first time a
 /// material references them.
 pub struct TextureRegistry {
-    project_root: Option<std::path::PathBuf>,
-    cache: HashMap<(AssetPath, ColorSpace), TextureHandle>,
+    /// Wrapped in `Arc` so the per-frame `set_project_root` call from
+    /// the viewport is a refcount bump, not a deep `PathBuf` clone.
+    project_root: Option<Arc<std::path::PathBuf>>,
+    /// Cache split per `ColorSpace` so the hit path can probe with
+    /// `&AssetPath` directly (no tuple-key clone per lookup). Two
+    /// variants of `ColorSpace` exist; one map per variant.
+    cache_srgb: HashMap<AssetPath, TextureHandle>,
+    cache_linear: HashMap<AssetPath, TextureHandle>,
     /// Failures we've already logged so we don't spam every frame.
-    failed: HashSet<(AssetPath, ColorSpace)>,
+    failed_srgb: HashSet<AssetPath>,
+    failed_linear: HashSet<AssetPath>,
     /// Linear sampler shared by every material draw. Wrap-repeat by
     /// default (the standard convention for tileable PBR maps);
     /// users wanting clamp-to-edge can swap the sampler in stage 8.
@@ -141,32 +149,20 @@ impl TextureRegistry {
             TextureFormat::Rgba8Unorm,
         )?;
 
-        let mut cache: HashMap<(AssetPath, ColorSpace), TextureHandle> = HashMap::new();
-        cache.insert(
-            (AssetPath::new(ENGINE_TEXTURE_WHITE), ColorSpace::Srgb),
-            white_srgb,
-        );
-        cache.insert(
-            (AssetPath::new(ENGINE_TEXTURE_WHITE), ColorSpace::Linear),
-            white_linear,
-        );
-        cache.insert(
-            (AssetPath::new(ENGINE_TEXTURE_BLACK), ColorSpace::Srgb),
-            black_srgb,
-        );
-        cache.insert(
-            (AssetPath::new(ENGINE_TEXTURE_BLACK), ColorSpace::Linear),
-            black_linear,
-        );
-        cache.insert(
-            (AssetPath::new(ENGINE_TEXTURE_NORMAL), ColorSpace::Linear),
-            flat_normal,
-        );
+        let mut cache_srgb: HashMap<AssetPath, TextureHandle> = HashMap::new();
+        let mut cache_linear: HashMap<AssetPath, TextureHandle> = HashMap::new();
+        cache_srgb.insert(AssetPath::new(ENGINE_TEXTURE_WHITE), white_srgb);
+        cache_linear.insert(AssetPath::new(ENGINE_TEXTURE_WHITE), white_linear);
+        cache_srgb.insert(AssetPath::new(ENGINE_TEXTURE_BLACK), black_srgb);
+        cache_linear.insert(AssetPath::new(ENGINE_TEXTURE_BLACK), black_linear);
+        cache_linear.insert(AssetPath::new(ENGINE_TEXTURE_NORMAL), flat_normal);
 
         Ok(Self {
             project_root: None,
-            cache,
-            failed: HashSet::new(),
+            cache_srgb,
+            cache_linear,
+            failed_srgb: HashSet::new(),
+            failed_linear: HashSet::new(),
             sampler,
             white_srgb,
             white_linear,
@@ -176,7 +172,7 @@ impl TextureRegistry {
         })
     }
 
-    pub fn set_project_root(&mut self, root: std::path::PathBuf) {
+    pub fn set_project_root(&mut self, root: Arc<std::path::PathBuf>) {
         self.project_root = Some(root);
     }
 
@@ -199,11 +195,14 @@ impl TextureRegistry {
         if path.is_empty() {
             return None;
         }
-        let key = (path.clone(), space);
-        if let Some(h) = self.cache.get(&key) {
+        let (cache, failed) = match space {
+            ColorSpace::Srgb => (&mut self.cache_srgb, &mut self.failed_srgb),
+            ColorSpace::Linear => (&mut self.cache_linear, &mut self.failed_linear),
+        };
+        if let Some(h) = cache.get(path) {
             return Some(*h);
         }
-        if self.failed.contains(&key) {
+        if failed.contains(path) {
             return None;
         }
         // Engine namespace is reserved; an unknown engine path is a
@@ -214,12 +213,16 @@ impl TextureRegistry {
                  `{ENGINE_TEXTURE_BLACK}`, `{ENGINE_TEXTURE_NORMAL}`)",
                 path.as_str(),
             );
-            self.failed.insert(key);
+            failed.insert(path.clone());
             return None;
         }
         match self.load_asset(rhi, path, space) {
             Ok(handle) => {
-                self.cache.insert(key, handle);
+                let cache = match space {
+                    ColorSpace::Srgb => &mut self.cache_srgb,
+                    ColorSpace::Linear => &mut self.cache_linear,
+                };
+                cache.insert(path.clone(), handle);
                 Some(handle)
             }
             Err(e) => {
@@ -227,7 +230,11 @@ impl TextureRegistry {
                     "ocarina-render: failed to load texture `{}`: {e}",
                     path.as_str()
                 );
-                self.failed.insert(key);
+                let failed = match space {
+                    ColorSpace::Srgb => &mut self.failed_srgb,
+                    ColorSpace::Linear => &mut self.failed_linear,
+                };
+                failed.insert(path.clone());
                 None
             }
         }
@@ -286,7 +293,7 @@ impl TextureRegistry {
             .project_root
             .as_ref()
             .ok_or(TextureLoadError::NoProjectRoot)?;
-        let absolute = path.resolve(root);
+        let absolute = path.resolve(root.as_path());
         let label = absolute.display().to_string();
         let pixels = decode_image(&absolute)?;
         upload_rgba8(rhi, &label, &pixels, space.texture_format())

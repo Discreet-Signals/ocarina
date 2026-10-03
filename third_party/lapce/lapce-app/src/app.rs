@@ -331,14 +331,21 @@ impl AppData {
         db: Arc<LapceDb>,
         paths: Vec<PathObject>,
     ) -> floem::Application {
-        // Ocarina-specific: request POLYGON_MODE_LINE so the
-        // viewport panel's wireframe alt pipeline can be built.
-        // Available on every desktop GPU we care about (Metal /
-        // Vulkan / DX12); the wireframe toggle in `RenderConfig`
-        // assumes its presence.
+        // Ocarina-specific wgpu features:
+        //   - POLYGON_MODE_LINE: viewport panel's wireframe alt
+        //     pipeline. Available on every desktop GPU we care
+        //     about (Metal / Vulkan / DX12); the wireframe toggle
+        //     in `RenderConfig` assumes its presence.
+        //   - TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES: lets the
+        //     post-process shader system bind storage textures
+        //     (`texture_storage_2d<F, read_write>`) so user
+        //     compositor passes can declare persistent scratch
+        //     buffers for IIR / feedback / accumulator effects.
         let mut app = floem::Application::new_with_config(
-            floem::AppConfig::default()
-                .wgpu_features(floem::wgpu::Features::POLYGON_MODE_LINE),
+            floem::AppConfig::default().wgpu_features(
+                floem::wgpu::Features::POLYGON_MODE_LINE
+                    | floem::wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            ),
         );
 
         let mut initial_windows = 0;

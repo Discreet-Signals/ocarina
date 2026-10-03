@@ -13,10 +13,11 @@
 //! `submitted_lists` for inspection by tests.
 
 use ocarina_rhi::{
-    AdapterKind, BindGroupDesc, BindGroupHandle, BindGroupLayoutDesc, BindGroupLayoutHandle,
-    BufferDesc, BufferHandle, Capabilities, CommandList, Features, Limits, PipelineDesc,
-    PipelineHandle, Rhi, RhiError, RhiResult, SamplerDesc, SamplerHandle, ShaderDesc, ShaderHandle,
-    SwapchainDesc, SwapchainHandle, TextureDesc, TextureHandle, TextureRegion,
+    AdapterKind, AsyncPipelineCompletion, AsyncPipelineId, BindGroupDesc, BindGroupHandle,
+    BindGroupLayoutDesc, BindGroupLayoutHandle, BufferDesc, BufferHandle, Capabilities,
+    CommandList, Features, Limits, PipelineDesc, PipelineHandle, Rhi, RhiError, RhiResult,
+    SamplerDesc, SamplerHandle, ShaderDesc, ShaderHandle, SwapchainDesc, SwapchainHandle,
+    TextureDesc, TextureHandle, TextureRegion,
 };
 
 const BACKEND_NAME: &str = "null";
@@ -88,6 +89,16 @@ pub struct NullRhi {
 
     /// Last submitted command lists, preserved for test inspection.
     pub submitted_lists: Vec<CommandList>,
+
+    /// Monotonic counter for `AsyncPipelineId`s. Bumped on every
+    /// `create_pipeline_async` call; never reused.
+    next_async_pipeline_id: u64,
+    /// Async pipeline builds completed but not yet drained. The null
+    /// backend resolves builds synchronously inside
+    /// `create_pipeline_async` and stages them here for the next
+    /// `poll_async_pipelines` call, which preserves the trait
+    /// contract that real backends defer the work to a worker.
+    pending_async_pipelines: Vec<AsyncPipelineCompletion>,
 
     /// Monotonic counters for cheap assertions.
     pub stats: NullStats,
@@ -194,6 +205,26 @@ impl Rhi for NullRhi {
         self.stats.creates += 1;
         let (slot, generation) = self.pipelines.alloc();
         Ok(PipelineHandle::new(slot, generation))
+    }
+
+    fn create_pipeline_async(
+        &mut self,
+        desc: &PipelineDesc<'_>,
+    ) -> AsyncPipelineId {
+        // Null backend: there's nothing to compile. Resolve the
+        // build synchronously and stage it for the next poll so
+        // tests still see the create-then-poll lifecycle real
+        // backends expose.
+        let id = AsyncPipelineId(self.next_async_pipeline_id);
+        self.next_async_pipeline_id += 1;
+        let result = self.create_pipeline(desc);
+        self.pending_async_pipelines
+            .push(AsyncPipelineCompletion { id, result });
+        id
+    }
+
+    fn poll_async_pipelines(&mut self) -> Vec<AsyncPipelineCompletion> {
+        std::mem::take(&mut self.pending_async_pipelines)
     }
 
     fn create_swapchain(&mut self, _desc: &SwapchainDesc<'_>) -> RhiResult<SwapchainHandle> {

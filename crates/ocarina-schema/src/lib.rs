@@ -82,6 +82,7 @@ pub enum Widget {
     EulerRotation,
     Color,
     Path,
+    PathArray,
 }
 
 // ──────────────────────────── Registration ─────────────────────────────

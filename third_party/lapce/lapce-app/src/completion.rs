@@ -52,6 +52,12 @@ pub struct CompletionData {
     pub input: String,
     /// `(Input, CompletionItems)`
     pub input_items: im::HashMap<String, im::Vector<ScoredCompletionItem>>,
+    /// In-process completions synthesised by the editor itself, e.g.
+    /// `ocarina_completions::completions_for_toml`. Stored separately
+    /// from `input_items` so a real LSP response on the same input
+    /// key doesn't clobber them, and so they participate in fuzzy
+    /// filtering alongside whatever the proxy returned.
+    pub ocarina_items: im::Vector<ScoredCompletionItem>,
     /// The filtered items that are being displayed to the user
     pub filtered_items: im::Vector<ScoredCompletionItem>,
     /// The size of the completion element.  
@@ -78,6 +84,7 @@ impl CompletionData {
             active,
             input: "".to_string(),
             input_items: im::HashMap::new(),
+            ocarina_items: im::Vector::new(),
             filtered_items: im::Vector::new(),
             layout_rect: Rect::ZERO,
             matcher: cx
@@ -145,6 +152,7 @@ impl CompletionData {
         self.active.set(0);
         self.input.clear();
         self.input_items.clear();
+        self.ocarina_items.clear();
         self.filtered_items.clear();
     }
 
@@ -162,13 +170,42 @@ impl CompletionData {
     }
 
     fn all_items(&self) -> im::Vector<ScoredCompletionItem> {
-        self.input_items
+        let mut base = self
+            .input_items
             .get(&self.input)
             .cloned()
             .filter(|items| !items.is_empty())
-            .unwrap_or_else(move || {
+            .unwrap_or_else(|| {
                 self.input_items.get("").cloned().unwrap_or_default()
+            });
+        // Schema-driven Ocarina completions are merged with whatever
+        // the proxy / LSP returned. They don't replace LSP results;
+        // both pools feed the same fuzzy filter.
+        for item in &self.ocarina_items {
+            base.push_back(item.clone());
+        }
+        base
+    }
+
+    /// Replace the in-process Ocarina completion pool. Called by the
+    /// editor when triggering completion in a `.toml` file. Empty
+    /// `items` clears the slot.
+    pub fn set_ocarina_items(
+        &mut self,
+        items: Vec<lsp_types::CompletionItem>,
+        plugin_id: PluginId,
+    ) {
+        self.ocarina_items = items
+            .into_iter()
+            .map(|item| ScoredCompletionItem {
+                item,
+                plugin_id,
+                score: 0,
+                label_score: 0,
+                indices: Vec::new(),
             })
+            .collect();
+        self.filter_items();
     }
 
     pub fn filter_items(&mut self) {

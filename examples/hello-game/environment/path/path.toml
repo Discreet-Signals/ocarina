@@ -1,0 +1,11 @@
+[name]
+value = "path"
+
+# Container entity. The actual geometry lives on the segment children
+# in subfolders; this entity only provides the group root so the path
+# can be moved as a whole. Identity transform keeps child positions
+# authoritative (and physics colliders aligned with rendering).
+[transform]
+position = [0.0, 0.0, 0.0]
+rotation = [0.0, 0.0, 0.0]
+scale    = [1.0, 1.0, 1.0]

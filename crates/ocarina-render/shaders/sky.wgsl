@@ -1,8 +1,12 @@
 // 3-stop gradient skybox.
 //
-// Renders a fullscreen quad that fills the colour attachment with a
-// world-space gradient sampled by the per-pixel view direction. No
-// vertex buffer; six vertices generated from `@builtin(vertex_index)`.
+// Renders a single oversized triangle that fills the colour
+// attachment with a world-space gradient sampled by the per-pixel
+// view direction. No vertex buffer; three vertices generated from
+// `@builtin(vertex_index)`. The triangle extends past the viewport
+// on two edges so the rasteriser clips cleanly to the visible
+// `[-1, 1]²` area, with no diagonal seam to generate redundant
+// helper-quad shading.
 //
 // World-direction reconstruction: each pixel's NDC coordinate +
 // far-plane depth (z = 1) maps through `inv_view_proj` to a world
@@ -31,14 +35,14 @@ struct VsOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
-    // Two triangles forming a fullscreen quad in clip-space.
-    var positions = array<vec2<f32>, 6>(
+    // Single oversized triangle that overhangs the viewport on two
+    // edges. Clipping handles the trim; no shared diagonal means
+    // fewer 2x2 helper-quad fragment invocations vs a two-triangle
+    // quad.
+    var positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
     );
     let p = positions[vid];
     var out: VsOut;

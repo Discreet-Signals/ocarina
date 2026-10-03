@@ -183,6 +183,14 @@ pub enum LapceWorkbenchCommand {
     #[strum(message = "Open File")]
     OpenFile,
 
+    // Ocarina engine: prompt the user for the SDK directory and
+    // persist the choice to ~/.ocarina/config.toml. Surfaced from
+    // the run/play palette when no SDK is detected so Build/Run
+    // can't be clicked into a silent failure.
+    #[strum(serialize = "ocarina_configure_sdk")]
+    #[strum(message = "Configure Ocarina SDK...")]
+    OcarinaConfigureSdk,
+
     #[strum(serialize = "show_call_hierarchy")]
     #[strum(message = "Show Call Hierarchy")]
     ShowCallHierarchy,

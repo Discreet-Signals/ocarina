@@ -11,6 +11,7 @@
 //! they appear as ordinary `MeshHandle`s like any user-loaded OBJ.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -87,7 +88,10 @@ pub const ENGINE_SPHERE: &str = "engine/sphere";
 pub struct MeshRegistry {
     /// Project root used to resolve user-asset paths. `None` means
     /// only engine meshes are available; user-mesh requests fail.
-    project_root: Option<std::path::PathBuf>,
+    /// Stored as `Arc` so the per-frame `set_project_root` call from
+    /// the viewport is an atomic refcount bump rather than a deep
+    /// `PathBuf` clone.
+    project_root: Option<Arc<std::path::PathBuf>>,
     cache: HashMap<AssetPath, MeshHandle>,
     /// Failures we've already logged so we don't spam every frame.
     failed: HashMap<AssetPath, ()>,
@@ -105,7 +109,7 @@ impl MeshRegistry {
         }
     }
 
-    pub fn set_project_root(&mut self, root: std::path::PathBuf) {
+    pub fn set_project_root(&mut self, root: Arc<std::path::PathBuf>) {
         self.project_root = Some(root);
     }
 
@@ -172,7 +176,7 @@ impl MeshRegistry {
             .project_root
             .as_ref()
             .ok_or(MeshLoadError::NoProjectRoot)?;
-        let absolute = path.resolve(root);
+        let absolute = path.resolve(root.as_path());
         let ext = absolute
             .extension()
             .and_then(|e| e.to_str())

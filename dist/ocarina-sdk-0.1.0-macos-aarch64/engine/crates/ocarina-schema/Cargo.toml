@@ -1,0 +1,17 @@
+[package]
+name = "ocarina-schema"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Component schema metadata + TOML → ECS loader registry."
+
+[dependencies]
+serde.workspace = true
+bevy_ecs.workspace = true
+toml.workspace = true
+inventory.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

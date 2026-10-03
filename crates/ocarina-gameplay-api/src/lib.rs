@@ -56,14 +56,18 @@ pub trait Script: Any + Send + Sync + 'static {
 /// What every script call receives. Holds mutable access to the world
 /// plus per-frame `Time` and `Input`. Lifetimes are scoped to a single
 /// `start` / `tick` call.
+///
+/// `input` is mutable so scripts can write cursor intent
+/// (`grab_cursor`, `show_cursor`). Reads still work through the same
+/// reference: `let inp = &*ctx.input;` for an immutable borrow.
 pub struct Context<'a> {
     pub world: &'a mut World,
     pub time: &'a Time,
-    pub input: &'a Input,
+    pub input: &'a mut Input,
 }
 
 impl<'a> Context<'a> {
-    pub fn new(world: &'a mut World, time: &'a Time, input: &'a Input) -> Self {
+    pub fn new(world: &'a mut World, time: &'a Time, input: &'a mut Input) -> Self {
         Self {
             world,
             time,

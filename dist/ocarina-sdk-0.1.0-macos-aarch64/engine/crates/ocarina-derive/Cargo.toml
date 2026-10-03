@@ -1,0 +1,21 @@
+[package]
+name = "ocarina-derive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Proc-macro derive for #[derive(Component)]. Implemented in Phase 2."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+ocarina-schema.workspace = true

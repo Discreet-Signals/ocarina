@@ -1,0 +1,23 @@
+[name]
+value = "long_path"
+
+[transform]
+position = [0.0, 2.807300090789795, -19.341100692749023]
+rotation = [18.19890022277832, -0.08879999816417694, -0.0]
+scale = [6.0, 0.5, 20.0]
+
+[mesh]
+source = "engine/cube"
+
+[material]
+albedo    = [0.15, 0.15, 0.10, 1.0]
+metallic  = 0.0
+roughness = 0.85
+
+[collider]
+shape    = "box"
+size     = [6.0, 0.5, 20.0]
+friction = 0.6
+
+[rigid_body]
+kind = "static"

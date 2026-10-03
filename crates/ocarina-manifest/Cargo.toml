@@ -1,0 +1,15 @@
+[package]
+name = "ocarina-manifest"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Parser for `Ocarina.toml` -- the per-project manifest that replaces the hand-written Cargo.toml + main.rs + build.rs."
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

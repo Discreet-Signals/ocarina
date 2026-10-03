@@ -35,7 +35,7 @@ use crate::{
     plugin::PluginData,
     source_control::SourceControlData,
     text_input::TextInputBuilder,
-    window_tab::{Focus, WindowTabData},
+    window_tab::{DragContent, Focus, WindowTabData},
 };
 
 /// Blends `foreground` with `background`.
@@ -316,10 +316,21 @@ fn file_explorer_view(
     let select = data.select;
     let secondary_click_data = data.clone();
     let scroll_rect = create_rw_signal(Rect::ZERO);
+    // Path of the folder the user is currently hovering with a
+    // drag-in-progress. Read by each folder row's style so the drop
+    // target gets a visible highlight; cleared on Drop or DragLeave.
+    // `None` means "panel root" (drop targets workspace root).
+    let drag_over_path: RwSignal<Option<std::path::PathBuf>> =
+        create_rw_signal(None);
+    let dragging = data.common.dragging;
+    let workspace_path = data.common.workspace.path.clone();
+
+    let data_for_list = data.clone();
+    let data_for_drop = data.clone();
 
     scroll(
         virtual_stack(
-            move || FileNodeVirtualList::new(root.get(), data.naming.get()),
+            move || FileNodeVirtualList::new(root.get(), data_for_list.naming.get()),
             move |node| (node.kind.clone(), node.is_dir, node.open, node.level),
             move |node| {
                 let level = node.level;
@@ -395,11 +406,16 @@ fn file_explorer_view(
                                 })
                         })
                     },
-                    file_node_text_view(data, node, source_control.clone()),
+                    file_node_text_view(data.clone(), node, source_control.clone()),
                 ))
                 .style({
                     let kind = kind.clone();
                     move |s| {
+                        let drag_over_match = is_dir
+                            && drag_over_path.with(|over| match (over, kind.path()) {
+                                (Some(o), Some(p)) => o == p,
+                                _ => false,
+                            });
                         s.padding_right(15.0)
                             .min_width_full()
                             .padding_left((level * 10) as f32)
@@ -422,6 +438,13 @@ fn file_explorer_view(
                                     )
                                 },
                             )
+                            .apply_if(drag_over_match, |s| {
+                                s.background(
+                                    config
+                                        .get()
+                                        .color(LapceColor::PANEL_CURRENT_BACKGROUND),
+                                )
+                            })
                     }
                 })
                 .debug_name("file item");
@@ -432,6 +455,10 @@ fn file_explorer_view(
                     let double_click_path = path.clone();
                     let secondary_click_path = path.clone();
                     let aux_click_path = path.clone();
+                    let drag_start_path = path.clone();
+                    let drag_over_for_row = path.clone();
+                    let drop_for_row = path.clone();
+                    let internal_command = data.common.internal_command;
                     view.on_click_stop({
                         let kind = kind.clone();
                         let focus = click_data.common.focus;
@@ -471,6 +498,92 @@ fn file_explorer_view(
                             }
                         },
                     )
+                    .draggable()
+                    .dragging_style(move |s| {
+                        let config = config.get();
+                        s.border(1.0)
+                            .border_radius(6.0)
+                            .background(
+                                config
+                                    .color(LapceColor::PANEL_BACKGROUND)
+                                    .multiply_alpha(0.7),
+                            )
+                            .border_color(config.color(LapceColor::LAPCE_BORDER))
+                    })
+                    .on_event_stop(EventListener::DragStart, move |_| {
+                        dragging.set(Some(DragContent::FilePath(
+                            drag_start_path.clone(),
+                        )));
+                    })
+                    .on_event_stop(EventListener::DragEnd, move |_| {
+                        dragging.set(None);
+                        drag_over_path.set(None);
+                    })
+                    .on_event_stop(EventListener::DragOver, move |_| {
+                        // Cursor is over a file row, not a folder.
+                        // Clear any highlight so the user sees this
+                        // isn't a valid drop target.
+                        if !is_dir {
+                            if drag_over_path.get_untracked().is_some() {
+                                drag_over_path.set(None);
+                            }
+                            return;
+                        }
+                        if let Some(DragContent::FilePath(src)) =
+                            dragging.get_untracked()
+                        {
+                            // A folder cannot be a drop target for
+                            // itself.
+                            if src == drag_over_for_row {
+                                if drag_over_path.get_untracked().is_some() {
+                                    drag_over_path.set(None);
+                                }
+                                return;
+                            }
+                            let current = drag_over_path.get_untracked();
+                            if current.as_deref()
+                                != Some(drag_over_for_row.as_path())
+                            {
+                                drag_over_path
+                                    .set(Some(drag_over_for_row.clone()));
+                            }
+                        }
+                    })
+                    .on_event(EventListener::Drop, move |_| {
+                        if !is_dir {
+                            return floem::event::EventPropagation::Continue;
+                        }
+                        let Some(DragContent::FilePath(src)) =
+                            dragging.get_untracked()
+                        else {
+                            return floem::event::EventPropagation::Continue;
+                        };
+                        dragging.set(None);
+                        drag_over_path.set(None);
+                        // Disallow self-drops and drops into the
+                        // current parent (would be a no-op move).
+                        if src == drop_for_row
+                            || src.parent() == Some(drop_for_row.as_path())
+                        {
+                            return floem::event::EventPropagation::Stop;
+                        }
+                        // Disallow dropping a folder into itself or
+                        // any of its descendants (would orphan it).
+                        if drop_for_row.starts_with(&src) {
+                            return floem::event::EventPropagation::Stop;
+                        }
+                        let Some(name) = src.file_name() else {
+                            return floem::event::EventPropagation::Stop;
+                        };
+                        let new_path = drop_for_row.join(name);
+                        internal_command.send(
+                            InternalCommand::FinishRenamePath {
+                                current_path: src,
+                                new_path,
+                            },
+                        );
+                        floem::event::EventPropagation::Stop
+                    })
                 } else {
                     view
                 }
@@ -485,6 +598,45 @@ fn file_explorer_view(
             if let Some(path) = &secondary_click_data.common.workspace.path {
                 secondary_click_data.secondary_click(path);
             }
+        }
+    })
+    // Cursor moved into empty panel space (per-row DragOver handlers
+    // stop propagation, so this only fires when not over any row).
+    // Clear the highlight; drop here means "workspace root" which we
+    // don't render with its own highlight target in v1.
+    .on_event_stop(EventListener::DragOver, move |_| {
+        if drag_over_path.get_untracked().is_some() {
+            drag_over_path.set(None);
+        }
+    })
+    // Drop on the panel's empty space moves the dragged file to the
+    // workspace root. Folder rows above intercept their own drops via
+    // EventPropagation::Stop, so this only fires for drops outside any
+    // row (or on a file row, which the row's own handler ignores).
+    .on_event(EventListener::Drop, {
+        let workspace_path = workspace_path.clone();
+        let internal_command = data_for_drop.common.internal_command;
+        move |_| {
+            let Some(workspace_path) = workspace_path.as_ref() else {
+                return floem::event::EventPropagation::Continue;
+            };
+            let Some(DragContent::FilePath(src)) = dragging.get_untracked() else {
+                return floem::event::EventPropagation::Continue;
+            };
+            dragging.set(None);
+            drag_over_path.set(None);
+            if src.parent() == Some(workspace_path.as_path()) {
+                return floem::event::EventPropagation::Stop;
+            }
+            let Some(name) = src.file_name() else {
+                return floem::event::EventPropagation::Stop;
+            };
+            let new_path = workspace_path.join(name);
+            internal_command.send(InternalCommand::FinishRenamePath {
+                current_path: src,
+                new_path,
+            });
+            floem::event::EventPropagation::Stop
         }
     })
     .on_resize(move |rect| {

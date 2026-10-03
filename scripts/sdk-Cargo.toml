@@ -1,0 +1,136 @@
+# Workspace manifest shipped inside the Ocarina SDK.
+#
+# Distinct from the dev workspace at the repo root: this one only
+# lists crates a user game's host crate transitively depends on,
+# omits the editor / viewport / cli crates that ship as binaries,
+# and drops the `[patch.crates-io]` entries that exist solely to
+# rewire editor-side dependencies (Lapce, Floem, our xi-rope fork).
+# Runtime crates don't pull any of those in, so the patches are
+# unused weight here.
+#
+# Keep `[workspace.dependencies]` in lockstep with the dev manifest;
+# `make-sdk.sh` checks the section is still a superset.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/ocarina-bake",
+    "crates/ocarina-core",
+    "crates/ocarina-derive",
+    "crates/ocarina-gameplay-api",
+    "crates/ocarina-manifest",
+    "crates/ocarina-physics",
+    "crates/ocarina-render",
+    "crates/ocarina-rhi",
+    "crates/ocarina-rhi-null",
+    "crates/ocarina-rhi-wgpu",
+    "crates/ocarina-runtime",
+    "crates/ocarina-scene",
+    "crates/ocarina-schema",
+    "crates/ocarina-shader",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+authors = ["Gavin <gavin@discreetsignals.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/discreetsignals/ocarina"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# --- Graphics + windowing ---
+wgpu        = { version = "24.0.5", features = ["spirv"] }
+winit       = "0.30"
+naga        = { version = "24", features = ["wgsl-in"] }
+
+# --- ECS / gameplay ---
+bevy_ecs    = "0.18"
+
+# --- Physics ---
+rapier3d    = "0.32"
+
+# --- Serialization ---
+serde       = { version = "1", features = ["derive"] }
+toml        = "1.1"
+toml_edit   = "0.23"
+bincode     = "2"
+
+# --- Filesystem ---
+notify      = "8"
+libloading  = "0.9"
+
+# --- Shader compilation ---
+hassle-rs   = "0.12"
+pollster    = "0.4"
+
+# --- Windowing ---
+raw-window-handle = "0.6"
+
+# --- IPC / async (kept for runtime parity; runtime crates only pull
+# `tokio` if a user game opts in) ---
+tokio       = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync"] }
+serde_json  = "1"
+
+# --- Proc-macro plumbing ---
+syn         = { version = "2", features = ["full"] }
+quote       = "1"
+proc-macro2 = "1"
+
+# --- Component schema registration ---
+inventory   = "0.3"
+
+# --- Common utility ---
+anyhow      = "1"
+thiserror   = "2"
+bitflags    = "2"
+bytemuck    = { version = "1", features = ["derive"] }
+glam        = { version = "0.30", features = ["serde", "bytemuck"] }
+log         = "0.4"
+env_logger  = "0.11"
+
+# --- Internal crates (path-deps inside the SDK) ---
+ocarina-rhi       = { path = "crates/ocarina-rhi", version = "0.1.0" }
+ocarina-rhi-null  = { path = "crates/ocarina-rhi-null", version = "0.1.0" }
+ocarina-rhi-wgpu  = { path = "crates/ocarina-rhi-wgpu", version = "0.1.0" }
+ocarina-schema    = { path = "crates/ocarina-schema", version = "0.1.0" }
+ocarina-derive    = { path = "crates/ocarina-derive", version = "0.1.0" }
+ocarina-core      = { path = "crates/ocarina-core", version = "0.1.0" }
+ocarina-runtime   = { path = "crates/ocarina-runtime", version = "0.1.0" }
+ocarina-bake      = { path = "crates/ocarina-bake", version = "0.1.0" }
+ocarina-shader    = { path = "crates/ocarina-shader", version = "0.1.0" }
+ocarina-manifest  = { path = "crates/ocarina-manifest", version = "0.1.0" }
+ocarina-scene     = { path = "crates/ocarina-scene", version = "0.1.0" }
+ocarina-physics   = { path = "crates/ocarina-physics", version = "0.1.0", default-features = false }
+ocarina-render    = { path = "crates/ocarina-render", version = "0.1.0", default-features = false }
+ocarina-gameplay-api = { path = "crates/ocarina-gameplay-api", version = "0.1.0" }
+
+# --- Mesh / texture loaders ---
+tobj              = { version = "4", default-features = false }
+image             = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+
+[profile.dev]
+opt-level = 1
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

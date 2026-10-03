@@ -2867,26 +2867,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hello-game"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "env_logger",
- "log",
- "ocarina-core",
- "ocarina-gameplay-api",
- "ocarina-physics",
- "ocarina-runtime",
-]
-
-[[package]]
-name = "hello-gameplay"
-version = "0.1.0"
-dependencies = [
- "ocarina-gameplay-api",
-]
-
-[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3608,6 +3588,7 @@ dependencies = [
  "notify 5.2.0",
  "nucleo",
  "ocarina-scene",
+ "ocarina-schema",
  "ocarina-viewport",
  "once_cell",
  "open",
@@ -3738,8 +3719,6 @@ dependencies = [
 [[package]]
 name = "lapce-xi-rope"
 version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6516aaa99c5059dc1a1bc02ed782d5e524699c1b4330028a6bed8259f9d9ff0a"
 dependencies = [
  "bytecount",
  "memchr",
@@ -4731,6 +4710,7 @@ dependencies = [
  "log",
  "ocarina-bake",
  "ocarina-core",
+ "ocarina-manifest",
  "ocarina-physics",
  "ocarina-runtime",
  "ocarina-scene",
@@ -4781,6 +4761,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ocarina-manifest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
 name = "ocarina-physics"
 version = "0.1.0"
 dependencies = [
@@ -4802,9 +4791,11 @@ dependencies = [
  "glam 0.30.10",
  "image",
  "log",
+ "naga",
  "ocarina-core",
  "ocarina-rhi",
  "ocarina-shader",
+ "thiserror 2.0.18",
  "tobj",
 ]
 

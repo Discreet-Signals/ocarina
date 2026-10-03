@@ -15,6 +15,9 @@ bevy_ecs.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 log.workspace = true
+naga.workspace = true
+thiserror.workspace = true
+
 
 # OBJ asset loader. Optional; the engine's built-in Box / Sphere
 # meshes are always available even without this feature.

@@ -1818,13 +1818,40 @@ impl EditorData {
             return;
         }
 
+        // Schema-aware in-process completions for entity `.toml`
+        // files. Computed every `update_completion` call so the
+        // suggestion set tracks the cursor's section context. Stored
+        // separately from the LSP-fed `input_items` (see
+        // `CompletionData::ocarina_items`) so a real LSP response on
+        // the same input key won't clobber them. Applied via
+        // `set_ocarina_items` inside each branch's closure *after*
+        // `completion.input` is updated, otherwise the internal
+        // `filter_items` call would run against the previous input.
+        let toml_items: Vec<lsp_types::CompletionItem> = if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+        {
+            let (text, position) = doc.buffer.with_untracked(|buffer| {
+                (buffer.to_string(), buffer.offset_to_position(offset))
+            });
+            crate::ocarina_completions::completions_for_toml(&text, position)
+        } else {
+            Vec::new()
+        };
+        let ocarina_plugin_id = lapce_rpc::plugin::PluginId(u64::MAX);
+
         if self.common.completion.with_untracked(|completion| {
             completion.status != CompletionStatus::Inactive
                 && completion.offset == start_offset
                 && completion.path == path
         }) {
+            let items_for_continuing = toml_items.clone();
             self.common.completion.update(|completion| {
                 completion.update_input(input.clone());
+                completion.set_ocarina_items(
+                    items_for_continuing,
+                    ocarina_plugin_id,
+                );
 
                 if !completion.input_items.contains_key("") {
                     let start_pos = doc.buffer.with_untracked(|buffer| {
@@ -1892,6 +1919,8 @@ impl EditorData {
                     position,
                 );
             }
+
+            completion.set_ocarina_items(toml_items, ocarina_plugin_id);
         });
     }
 

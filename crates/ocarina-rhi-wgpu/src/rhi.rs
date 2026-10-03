@@ -3,20 +3,47 @@
 use std::num::NonZeroU64;
 
 use ocarina_rhi::{
-    BindGroupDesc, BindGroupHandle, BindGroupLayoutDesc, BindGroupLayoutHandle, BindingResource,
-    BufferDesc, BufferHandle, Capabilities, CommandList, PipelineDesc, PipelineHandle, PipelineKind,
-    PresentMode, RenderPassInfo, Rhi, RhiError, RhiResult, SamplerDesc, SamplerHandle,
-    ShaderBytecode, ShaderDesc, ShaderHandle, SwapchainDesc, SwapchainHandle, TextureDesc,
-    TextureHandle, TextureRegion,
+    AsyncPipelineCompletion, AsyncPipelineId, BindGroupDesc, BindGroupHandle,
+    BindGroupLayoutDesc, BindGroupLayoutHandle, BindingResource, BufferDesc, BufferHandle,
+    Capabilities, CommandList, PipelineDesc, PipelineHandle, PipelineKind, PresentMode,
+    RenderPassInfo, Rhi, RhiError, RhiResult, SamplerDesc, SamplerHandle, ShaderBytecode,
+    ShaderDesc, ShaderHandle, SwapchainDesc, SwapchainHandle, TextureDesc, TextureHandle,
+    TextureRegion,
 };
 
 use crate::capability::capabilities_from_adapter;
 use crate::command;
 use crate::convert as cv;
 use crate::destroy::{DestroyQueue, Pending};
+use crate::pipeline_compiler;
 use crate::pool::Pool;
 
 pub const BACKEND_NAME: &str = "wgpu";
+
+/// Replace wgpu's default uncaptured-error handler (which panics the
+/// process) with a logging one. Without this a malformed user shader
+/// or pipeline brings the whole editor down. Errors that escape the
+/// targeted scopes in `create_shader` / `create_pipeline` still get
+/// logged so they're not silently swallowed.
+fn install_non_panicking_error_handler(device: &wgpu::Device) {
+    device.on_uncaptured_error(Box::new(|err: wgpu::Error| {
+        log::error!("wgpu uncaptured error: {err}");
+    }));
+}
+
+/// Run `op` inside a wgpu validation error scope. Returns the
+/// captured error if validation failed, `None` otherwise. On native
+/// the future resolves synchronously after the device has processed
+/// the queued work, so the brief block is fine.
+fn capture_validation<F, T>(device: &wgpu::Device, op: F) -> (T, Option<wgpu::Error>)
+where
+    F: FnOnce() -> T,
+{
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let value = op();
+    let err = pollster::block_on(device.pop_error_scope());
+    (value, err)
+}
 
 // ────────── Pool entries ──────────
 
@@ -26,7 +53,13 @@ pub(crate) struct ShaderEntry {
 }
 
 pub(crate) struct TextureEntry {
-    pub texture: wgpu::Texture,
+    /// Owning texture for entries the RHI allocated (`create_texture`,
+    /// swapchain backbuffer). `None` for external entries the editor
+    /// registered via [`WgpuRhi::register_external_view`] -- in that
+    /// case the host (Floem) owns the parent texture and only hands
+    /// us the view. Buffer / texture copy commands need the parent;
+    /// they error if invoked against an external entry.
+    pub texture: Option<wgpu::Texture>,
     pub view: wgpu::TextureView,
     #[allow(dead_code)] // retained for mip/readback paths in later phases
     pub format: wgpu::TextureFormat,
@@ -94,6 +127,21 @@ impl Default for Pools {
 pub struct WgpuRhi {
     pub(crate) pools: Pools,
     destroy: DestroyQueue,
+    /// Worker thread + channels powering [`Rhi::create_pipeline_async`].
+    /// Holds a `wgpu::Device` clone so it can call
+    /// `device.create_render_pipeline` off the render thread; results
+    /// are drained by `poll_async_pipelines` and adopted into
+    /// [`Self::pools.pipelines`] like any synchronous pipeline.
+    pipeline_compiler: pipeline_compiler::PipelineCompiler,
+    /// Monotonic counter for [`AsyncPipelineId`]s. Bumped per submit;
+    /// never reused so callers can compare ids by equality across
+    /// frames safely.
+    next_async_pipeline_id: u64,
+    /// Async-pipeline failures that didn't reach the worker (invalid
+    /// handles, missing fragment stage, etc.). Drained alongside
+    /// worker-produced results inside `poll_async_pipelines` so the
+    /// caller sees a uniform stream.
+    async_pipeline_local_failures: Vec<AsyncPipelineCompletion>,
     pub(crate) queue: wgpu::Queue,
     pub(crate) device: wgpu::Device,
     /// The wgpu `Instance` is only retained when `WgpuRhi` owns the full
@@ -129,17 +177,23 @@ impl WgpuRhi {
     #[must_use]
     pub fn from_existing(device: wgpu::Device, queue: wgpu::Queue, adapter: &wgpu::Adapter) -> Self {
         let caps = capabilities_from_adapter(adapter, &device);
+        install_non_panicking_error_handler(&device);
         log::info!(
             "WgpuRhi initialized: {} ({:?}) [editor / shared context]",
             caps.device_name,
             caps.adapter_kind
         );
+        let pipeline_compiler =
+            pipeline_compiler::PipelineCompiler::spawn(device.clone());
         Self {
             device,
             queue,
             instance: None,
             pools: Pools::default(),
             destroy: DestroyQueue::new(),
+            pipeline_compiler,
+            next_async_pipeline_id: 0,
+            async_pipeline_local_failures: Vec::new(),
             caps,
         }
     }
@@ -217,6 +271,7 @@ impl WgpuRhi {
         surface.configure(&device, &config);
 
         let caps = capabilities_from_adapter(&adapter, &device);
+        install_non_panicking_error_handler(&device);
         log::info!(
             "WgpuRhi initialized: {} ({:?}) [standalone / {}x{} / format {:?}]",
             caps.device_name,
@@ -226,12 +281,17 @@ impl WgpuRhi {
             surface_format,
         );
 
+        let pipeline_compiler =
+            pipeline_compiler::PipelineCompiler::spawn(device.clone());
         let mut rhi = Self {
             device,
             queue,
             instance: Some(instance),
             pools: Pools::default(),
             destroy: DestroyQueue::new(),
+            pipeline_compiler,
+            next_async_pipeline_id: 0,
+            async_pipeline_local_failures: Vec::new(),
             caps,
         };
 
@@ -269,13 +329,15 @@ impl WgpuRhi {
             .map(|t| &t.view)
     }
 
-    /// Look up the underlying `wgpu::Texture` for a handle.
+    /// Look up the underlying `wgpu::Texture` for a handle. Returns
+    /// `None` for external entries (Floem-borrowed views) since the
+    /// host owns the parent texture in that case.
     #[must_use]
     pub fn texture(&self, handle: TextureHandle) -> Option<&wgpu::Texture> {
         self.pools
             .textures
             .get(handle.raw().slot, handle.raw().generation)
-            .map(|t| &t.texture)
+            .and_then(|t| t.texture.as_ref())
     }
 
     /// Look up the underlying `wgpu::Buffer` for a handle.
@@ -300,6 +362,53 @@ impl WgpuRhi {
             .bgs
             .get(handle.raw().slot, handle.raw().generation)
     }
+
+    /// Register a borrowed `wgpu::TextureView` (typically the editor
+    /// host's swapchain target handed to us by Floem) as a regular
+    /// [`TextureHandle`]. The handle plugs into the same CommandList
+    /// path as RHI-allocated textures, letting `ocarina-render`'s
+    /// unified renderer record into the host surface without knowing
+    /// it's external.
+    ///
+    /// `view` is cloned cheaply (wgpu's `TextureView` is internally
+    /// reference-counted). The host keeps the parent `wgpu::Texture`
+    /// alive for the duration the handle is in use; copy ops through
+    /// this handle error since we don't own the parent.
+    ///
+    /// Pair with [`unregister_external_view`] before the parent
+    /// texture goes out of scope (typically end-of-frame, before
+    /// Floem presents).
+    pub fn register_external_view(
+        &mut self,
+        view: wgpu::TextureView,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+    ) -> TextureHandle {
+        let entry = TextureEntry {
+            texture: None,
+            view,
+            format,
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+        };
+        let (slot, generation) = self.pools.textures.insert(entry);
+        TextureHandle::new(slot, generation)
+    }
+
+    /// Drop an external view registered via
+    /// [`register_external_view`]. Invalidates the handle's
+    /// generation so any stale reference fails the next pool lookup.
+    /// Must be called before the host releases the parent texture
+    /// (typically each frame).
+    pub fn unregister_external_view(&mut self, handle: TextureHandle) {
+        self.pools
+            .textures
+            .remove(handle.raw().slot, handle.raw().generation);
+    }
+
 
     /// The color format of `swapchain`'s backbuffer. Pipelines that
     /// will draw into this swapchain must declare this format as
@@ -407,7 +516,7 @@ impl Rhi for WgpuRhi {
             ..Default::default()
         });
         let entry = TextureEntry {
-            texture,
+            texture: Some(texture),
             view,
             format,
             size,
@@ -447,12 +556,21 @@ impl Rhi for WgpuRhi {
                 ));
             }
         };
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
+        // Wrap in a validation error scope so a malformed WGSL turns
+        // into a returned `Err` instead of an uncaptured device error
+        // (which the panic-by-default global handler would crash on).
+        let (module, err) = capture_validation(&self.device, || {
+            self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: desc.label,
                 source,
-            });
+            })
+        });
+        if let Some(err) = err {
+            return Err(RhiError::Backend(format!(
+                "shader compile failed for `{}`: {err}",
+                desc.label.unwrap_or("<unlabelled>")
+            )));
+        }
         let entry = ShaderEntry {
             module,
             entry_point: desc.entry_point.to_owned(),
@@ -716,24 +834,36 @@ impl Rhi for WgpuRhi {
                     alpha_to_coverage_enabled: g.multisample.alpha_to_coverage_enabled,
                 };
 
-                let pipeline = self.device.create_render_pipeline(
-                    &wgpu::RenderPipelineDescriptor {
-                        label: desc.label,
-                        layout: Some(&layout),
-                        vertex: wgpu::VertexState {
-                            module: &vs_entry.module,
-                            entry_point: Some(&vs_entry.entry_point),
-                            compilation_options: wgpu::PipelineCompilationOptions::default(),
-                            buffers: &buffer_layouts,
+                // Capture validation errors so a shader compile that
+                // got a placeholder module (or a layout mismatch) turns
+                // into Err instead of panicking the device.
+                let (pipeline, err) = capture_validation(&self.device, || {
+                    self.device.create_render_pipeline(
+                        &wgpu::RenderPipelineDescriptor {
+                            label: desc.label,
+                            layout: Some(&layout),
+                            vertex: wgpu::VertexState {
+                                module: &vs_entry.module,
+                                entry_point: Some(&vs_entry.entry_point),
+                                compilation_options:
+                                    wgpu::PipelineCompilationOptions::default(),
+                                buffers: &buffer_layouts,
+                            },
+                            primitive,
+                            depth_stencil,
+                            multisample,
+                            fragment,
+                            multiview: None,
+                            cache: None,
                         },
-                        primitive,
-                        depth_stencil,
-                        multisample,
-                        fragment,
-                        multiview: None,
-                        cache: None,
-                    },
-                );
+                    )
+                });
+                if let Some(err) = err {
+                    return Err(RhiError::Backend(format!(
+                        "render pipeline create failed for `{}`: {err}",
+                        desc.label.unwrap_or("<unlabelled>")
+                    )));
+                }
                 let (slot, generation) =
                     self.pools.pipelines.insert(PipelineEntry::Graphics(pipeline));
                 Ok(PipelineHandle::new(slot, generation))
@@ -744,7 +874,7 @@ impl Rhi for WgpuRhi {
                     .shaders
                     .get(c.shader.raw().slot, c.shader.raw().generation)
                     .ok_or(RhiError::InvalidHandle("ShaderHandle (compute)"))?;
-                let pipeline =
+                let (pipeline, err) = capture_validation(&self.device, || {
                     self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                         label: desc.label,
                         layout: Some(&layout),
@@ -752,12 +882,290 @@ impl Rhi for WgpuRhi {
                         entry_point: Some(&cs_entry.entry_point),
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                         cache: None,
-                    });
+                    })
+                });
+                if let Some(err) = err {
+                    return Err(RhiError::Backend(format!(
+                        "compute pipeline create failed for `{}`: {err}",
+                        desc.label.unwrap_or("<unlabelled>")
+                    )));
+                }
                 let (slot, generation) =
                     self.pools.pipelines.insert(PipelineEntry::Compute(pipeline));
                 Ok(PipelineHandle::new(slot, generation))
             }
         }
+    }
+
+    fn create_pipeline_async(
+        &mut self,
+        desc: &PipelineDesc<'_>,
+    ) -> AsyncPipelineId {
+        let id = AsyncPipelineId(self.next_async_pipeline_id);
+        self.next_async_pipeline_id += 1;
+
+        // Async path is graphics-only for now; compute pipelines are
+        // rare in the editor and don't have the recompile-on-save
+        // workflow that motivated this code. Surface a local
+        // failure via poll_async_pipelines so callers see the same
+        // shape as a regular validation failure.
+        let g = match desc.kind {
+            PipelineKind::Graphics(g) => g,
+            PipelineKind::Compute(_) => {
+                self.async_pipeline_local_failures.push(
+                    AsyncPipelineCompletion {
+                        id,
+                        result: Err(RhiError::Backend(
+                            "create_pipeline_async: compute pipelines are not \
+                             supported on the async path"
+                                .into(),
+                        )),
+                    },
+                );
+                return id;
+            }
+        };
+
+        // Resolve handles into wgpu types we can move across thread.
+        // Failures (invalid handles) post a synthetic Err result via
+        // the `pending_async_pipelines_local` queue rather than a
+        // worker round-trip.
+        let bgls: Vec<wgpu::BindGroupLayout> = match desc
+            .bind_group_layouts
+            .iter()
+            .map(|h| {
+                self.pools
+                    .bgls
+                    .get(h.raw().slot, h.raw().generation)
+                    .cloned()
+                    .ok_or(RhiError::InvalidHandle("BindGroupLayoutHandle"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.async_pipeline_local_failures.push(
+                    AsyncPipelineCompletion {
+                        id,
+                        result: Err(e),
+                    },
+                );
+                return id;
+            }
+        };
+
+        let push_constant_ranges: Vec<wgpu::PushConstantRange> = desc
+            .push_constant_ranges
+            .iter()
+            .map(|r| wgpu::PushConstantRange {
+                stages: cv::shader_stages(r.stages),
+                range: r.offset..(r.offset + r.size),
+            })
+            .collect();
+
+        let bgl_refs: Vec<&wgpu::BindGroupLayout> = bgls.iter().collect();
+        let layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: desc.label,
+                bind_group_layouts: &bgl_refs,
+                push_constant_ranges: &push_constant_ranges,
+            });
+
+        let vs_entry = match self
+            .pools
+            .shaders
+            .get(g.vertex.shader.raw().slot, g.vertex.shader.raw().generation)
+        {
+            Some(s) => s,
+            None => {
+                self.async_pipeline_local_failures.push(
+                    AsyncPipelineCompletion {
+                        id,
+                        result: Err(RhiError::InvalidHandle("ShaderHandle (vertex)")),
+                    },
+                );
+                return id;
+            }
+        };
+        let vs_module = vs_entry.module.clone();
+        let vs_entry_name = vs_entry.entry_point.clone();
+
+        let (fs_module, fs_entry_name) = match g.fragment.as_ref() {
+            Some(fs) => match self
+                .pools
+                .shaders
+                .get(fs.shader.raw().slot, fs.shader.raw().generation)
+            {
+                Some(e) => (e.module.clone(), e.entry_point.clone()),
+                None => {
+                    self.async_pipeline_local_failures.push(
+                        AsyncPipelineCompletion {
+                            id,
+                            result: Err(RhiError::InvalidHandle("ShaderHandle (fragment)")),
+                        },
+                    );
+                    return id;
+                }
+            },
+            None => {
+                // Async path requires a fragment stage; rasterization-
+                // only graphics pipelines don't fit the usual user-
+                // shader workflow that drives this API.
+                self.async_pipeline_local_failures.push(
+                    AsyncPipelineCompletion {
+                        id,
+                        result: Err(RhiError::Backend(
+                            "create_pipeline_async requires a fragment stage".into(),
+                        )),
+                    },
+                );
+                return id;
+            }
+        };
+
+        // Vertex buffer layouts — own the attribute vec so the
+        // request can move across threads.
+        let vertex_buffers: Vec<pipeline_compiler::OwnedVertexBufferLayout> = g
+            .vertex
+            .buffers
+            .iter()
+            .map(|vbl| pipeline_compiler::OwnedVertexBufferLayout {
+                array_stride: vbl.array_stride,
+                step_mode: cv::step_mode(vbl.step_mode),
+                attributes: vbl
+                    .attributes
+                    .iter()
+                    .map(|a| wgpu::VertexAttribute {
+                        format: cv::vertex_format(a.format),
+                        offset: a.offset,
+                        shader_location: a.shader_location,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        // Fragment color targets — same shape as the sync path,
+        // copied into an owned `Vec<Option<_>>` so slot positions
+        // are preserved and the worker can pass `&req.color_targets`
+        // straight into wgpu's `&[Option<ColorTargetState>]` field.
+        let color_targets: Vec<Option<wgpu::ColorTargetState>> = g
+            .fragment
+            .as_ref()
+            .map(|f| {
+                f.targets
+                    .iter()
+                    .map(|t| {
+                        t.as_ref().map(|t| wgpu::ColorTargetState {
+                            format: cv::texture_format(t.format),
+                            blend: t.blend.map(|b| wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: cv::blend_factor(b.color.src_factor),
+                                    dst_factor: cv::blend_factor(b.color.dst_factor),
+                                    operation: cv::blend_operation(b.color.operation),
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: cv::blend_factor(b.alpha.src_factor),
+                                    dst_factor: cv::blend_factor(b.alpha.dst_factor),
+                                    operation: cv::blend_operation(b.alpha.operation),
+                                },
+                            }),
+                            write_mask: cv::color_writes(t.write_mask),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let primitive = wgpu::PrimitiveState {
+            topology: cv::primitive_topology(g.primitive.topology),
+            strip_index_format: g.primitive.strip_index_format.map(cv::index_format),
+            front_face: cv::front_face(g.primitive.front_face),
+            cull_mode: g.primitive.cull_mode.map(cv::cull_face),
+            polygon_mode: cv::polygon_mode(g.primitive.polygon_mode),
+            unclipped_depth: g.primitive.unclipped_depth,
+            conservative: g.primitive.conservative,
+        };
+
+        let depth_stencil = g.depth_stencil.map(|d| wgpu::DepthStencilState {
+            format: cv::texture_format(d.format),
+            depth_write_enabled: d.depth_write_enabled,
+            depth_compare: cv::compare_function(d.depth_compare),
+            stencil: wgpu::StencilState {
+                front: wgpu::StencilFaceState {
+                    compare: d
+                        .stencil_front
+                        .compare
+                        .map(cv::compare_function)
+                        .unwrap_or(wgpu::CompareFunction::Always),
+                    fail_op: cv::stencil_op(d.stencil_front.fail_op),
+                    depth_fail_op: cv::stencil_op(d.stencil_front.depth_fail_op),
+                    pass_op: cv::stencil_op(d.stencil_front.pass_op),
+                },
+                back: wgpu::StencilFaceState {
+                    compare: d
+                        .stencil_back
+                        .compare
+                        .map(cv::compare_function)
+                        .unwrap_or(wgpu::CompareFunction::Always),
+                    fail_op: cv::stencil_op(d.stencil_back.fail_op),
+                    depth_fail_op: cv::stencil_op(d.stencil_back.depth_fail_op),
+                    pass_op: cv::stencil_op(d.stencil_back.pass_op),
+                },
+                read_mask: d.stencil_read_mask,
+                write_mask: d.stencil_write_mask,
+            },
+            bias: wgpu::DepthBiasState {
+                constant: d.bias.constant,
+                slope_scale: d.bias.slope_scale,
+                clamp: d.bias.clamp,
+            },
+        });
+
+        let multisample = wgpu::MultisampleState {
+            count: g.multisample.count,
+            mask: g.multisample.mask,
+            alpha_to_coverage_enabled: g.multisample.alpha_to_coverage_enabled,
+        };
+
+        self.pipeline_compiler.submit(pipeline_compiler::BuildRequest {
+            id,
+            label: desc.label.unwrap_or("compositor.async").into(),
+            layout,
+            vs_module,
+            vs_entry: vs_entry_name,
+            fs_module,
+            fs_entry: fs_entry_name,
+            vertex_buffers,
+            color_targets,
+            primitive,
+            depth_stencil,
+            multisample,
+        });
+        id
+    }
+
+    fn poll_async_pipelines(&mut self) -> Vec<AsyncPipelineCompletion> {
+        // Drain the worker's outbound channel and adopt successful
+        // pipelines into the regular pipeline pool. Locally-staged
+        // failures (handle resolution failures that never reached
+        // the worker) are appended at the end.
+        let mut out = Vec::new();
+        for r in self.pipeline_compiler.drain() {
+            let result = match r.outcome {
+                Ok(pipeline) => {
+                    let (slot, generation) = self
+                        .pools
+                        .pipelines
+                        .insert(PipelineEntry::Graphics(pipeline));
+                    Ok(PipelineHandle::new(slot, generation))
+                }
+                Err(e) => Err(RhiError::Backend(e)),
+            };
+            out.push(AsyncPipelineCompletion { id: r.id, result });
+        }
+        out.append(&mut self.async_pipeline_local_failures);
+        out
     }
 
     fn create_swapchain(&mut self, _desc: &SwapchainDesc<'_>) -> RhiResult<SwapchainHandle> {
@@ -850,9 +1258,16 @@ impl Rhi for WgpuRhi {
             log::warn!("write_texture: stale handle {handle:?}");
             return;
         };
+        let Some(parent_tex) = tex.texture.as_ref() else {
+            log::warn!(
+                "write_texture: handle {handle:?} is an external view; \
+                 cannot upload (host owns the parent texture)"
+            );
+            return;
+        };
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &tex.texture,
+                texture: parent_tex,
                 mip_level: region.mip_level,
                 origin: wgpu::Origin3d {
                     x: region.origin[0],
@@ -937,7 +1352,7 @@ impl Rhi for WgpuRhi {
         // Expose the frame's backbuffer as a regular TextureHandle so user
         // code uses the same CommandList path as offscreen targets.
         let (tex_slot, tex_gen) = self.pools.textures.insert(TextureEntry {
-            texture: texture_clone,
+            texture: Some(texture_clone),
             view,
             format,
             size,

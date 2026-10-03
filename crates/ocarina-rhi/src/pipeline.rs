@@ -1,8 +1,39 @@
 //! Graphics and compute pipeline descriptors.
 
+use crate::error::RhiError;
 use crate::format::{TextureFormat, VertexFormat};
-use crate::handle::{BindGroupLayoutHandle, ShaderHandle};
+use crate::handle::{BindGroupLayoutHandle, PipelineHandle, ShaderHandle};
 use crate::shader::ShaderStageFlags;
+
+// ────────────────────────── Async pipeline build ──────────────────────────
+
+/// Opaque identifier for an in-flight async pipeline build. Returned
+/// by [`Rhi::create_pipeline_async`] and matched by the caller against
+/// the entries from [`Rhi::poll_async_pipelines`] to know when (and
+/// whether) a particular submission completed.
+///
+/// The id is unique per RHI for the lifetime of the RHI (no reuse —
+/// the backend holds a monotonic counter). Comparing ids by equality
+/// is the intended use.
+///
+/// [`Rhi::create_pipeline_async`]: crate::Rhi::create_pipeline_async
+/// [`Rhi::poll_async_pipelines`]: crate::Rhi::poll_async_pipelines
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AsyncPipelineId(pub u64);
+
+/// Result of one async pipeline compile, drained by
+/// [`Rhi::poll_async_pipelines`]. The successful payload is a
+/// [`PipelineHandle`] adopted into the RHI's regular pipeline pool —
+/// callers use it identically to a handle from the synchronous
+/// [`Rhi::create_pipeline`] path, including `destroy_pipeline`.
+///
+/// [`Rhi::create_pipeline`]: crate::Rhi::create_pipeline
+/// [`Rhi::poll_async_pipelines`]: crate::Rhi::poll_async_pipelines
+#[derive(Debug)]
+pub struct AsyncPipelineCompletion {
+    pub id: AsyncPipelineId,
+    pub result: Result<PipelineHandle, RhiError>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PipelineDesc<'a> {

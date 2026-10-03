@@ -18,6 +18,7 @@ ocarina-bake.workspace = true
 ocarina-runtime.workspace = true
 ocarina-scene.workspace = true
 ocarina-physics.workspace = true
+ocarina-manifest.workspace = true
 # ocarina-lsp parked during Lapce migration -- see lsp_command in src/main.rs
 serde.workspace = true
 serde_json.workspace = true

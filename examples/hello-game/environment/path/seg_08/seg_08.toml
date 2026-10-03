@@ -1,0 +1,23 @@
+[name]
+value = "seg_08"
+
+[transform]
+position = [28.39, 4.7, 6.82]
+rotation = [-6.0, 181.82, 0.0]
+scale    = [4.4, 0.6, 5.6]
+
+[mesh]
+source = "engine/cube"
+
+[material]
+albedo    = [0.53, 0.51, 0.47, 1.0]
+metallic  = 0.0
+roughness = 0.7
+
+[collider]
+shape    = "box"
+size     = [4.4, 0.6, 5.6]
+friction = 0.6
+
+[rigid_body]
+kind = "static"

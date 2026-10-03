@@ -1,0 +1,16 @@
+# Ocarina project manifest. The only file you maintain by hand;
+# `ocarina build` / `ocarina run` reads this and generates an
+# ephemeral cargo crate at `.ocarina/host/` that links the engine
+# baseline (core / runtime / gameplay-api / physics) plus anything
+# you list under `[dependencies]`.
+
+[project]
+name        = "hello-game"
+version     = "0.1.0"
+description = "End-to-end smoke test for the Ocarina engine: a player-controlled cube + ball physics demo."
+license     = "MIT OR Apache-2.0"
+
+# External crates the project's `scripts/*.rs` files want to use.
+# Engine subsystems (`ocarina-*`) are also valid here -- the CLI
+# rewrites them to internal path-deps automatically. Empty by default.
+[dependencies]

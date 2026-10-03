@@ -41,10 +41,27 @@ pub struct Runtime {
     /// One vec per entity, parallel to the entity's `Scripts.items`
     /// order. We track them outside the ECS because `Box<dyn Script>`
     /// isn't a component (no Send + Sync + 'static guarantees we want
-    /// to make automatic) and instances carry per-frame state.
-    instances: HashMap<Entity, Vec<Box<dyn Script>>>,
+    /// to make automatic) and instances carry per-frame state. The
+    /// `bool` is a "poisoned" flag set if the script panicked in
+    /// `start` or `tick`; poisoned scripts are skipped on subsequent
+    /// frames so a single buggy script can't bring down the editor or
+    /// flood the log loop forever.
+    instances: HashMap<Entity, Vec<ScriptSlot>>,
     /// Entities whose script `start()` we've already run.
     started: std::collections::HashSet<Entity>,
+}
+
+/// One running script instance plus a poisoned flag. We can't put the
+/// flag inside `Box<dyn Script>` (it would force an extension to the
+/// public trait), so we wrap.
+struct ScriptSlot {
+    script: Box<dyn Script>,
+    /// Identifier the user wrote in TOML; carried so a panic message
+    /// can name the script that broke instead of just "<unknown>".
+    path: String,
+    /// Set after the first panic from `start` or `tick`. Skipped on
+    /// subsequent calls.
+    poisoned: bool,
 }
 
 impl Runtime {
@@ -95,10 +112,27 @@ impl Runtime {
         }
 
         for (entity, paths) in to_construct {
-            let mut built: Vec<Box<dyn Script>> = Vec::with_capacity(paths.len());
+            let mut built: Vec<ScriptSlot> = Vec::with_capacity(paths.len());
             for path in &paths {
                 match find_script(path) {
-                    Some(reg) => built.push((reg.construct)()),
+                    Some(reg) => {
+                        // The constructor itself can panic for
+                        // misbehaving user scripts. Catch it so one
+                        // bad script doesn't take down the editor.
+                        let constructed = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(reg.construct),
+                        );
+                        match constructed {
+                            Ok(s) => built.push(ScriptSlot {
+                                script: s,
+                                path: path.clone(),
+                                poisoned: false,
+                            }),
+                            Err(_) => log::error!(
+                                "script `{path}` panicked during construction on entity {entity:?} -- disabling for this session"
+                            ),
+                        }
+                    }
                     None => log::warn!(
                         "no script registered for path `{path}` on entity {entity:?} -- skipping"
                     ),
@@ -128,15 +162,47 @@ impl Runtime {
                 continue;
             };
             let started = self.started.contains(&entity);
-            {
-                let mut ctx = Context::new(&mut self.scene.world, &self.time, &self.input);
+            // Wrap each `start` / `tick` invocation in `catch_unwind`
+            // so a panicking user script logs once and gets poisoned
+            // (skipped from then on) instead of bringing down the
+            // host. The world it touched may be in a partial state,
+            // but that beats process death.
+            for s in &mut scripts {
+                if s.poisoned {
+                    continue;
+                }
                 if !started {
-                    for s in &mut scripts {
-                        s.start(&mut ctx, entity);
+                    let path = s.path.clone();
+                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut ctx = Context::new(
+                            &mut self.scene.world,
+                            &self.time,
+                            &mut self.input,
+                        );
+                        s.script.start(&mut ctx, entity);
+                    }));
+                    if res.is_err() {
+                        log::error!(
+                            "script `{path}` panicked in start() on entity {entity:?} -- disabling for this session"
+                        );
+                        s.poisoned = true;
+                        continue;
                     }
                 }
-                for s in &mut scripts {
-                    s.tick(&mut ctx, entity);
+                let path = s.path.clone();
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut ctx = Context::new(
+                        &mut self.scene.world,
+                        &self.time,
+                        &mut self.input,
+                    );
+                    s.script.tick(&mut ctx, entity);
+                }));
+                if res.is_err() {
+                    log::error!(
+                        "script `{path}` panicked in tick() on entity {entity:?} -- disabling for this session"
+                    );
+                    s.poisoned = true;
                 }
             }
             if !started {
@@ -263,7 +329,7 @@ mod tests {
         let mut scene = Scene::empty(std::env::temp_dir().join("ocarina-runtime-tick-test"));
         scene.world = world;
         scene.dir_entity.clear();
-        scene.dir_entity.insert(scene.root_dir.clone(), entity);
+        scene.dir_entity.insert((*scene.root_dir).clone(), entity);
         scene.root = entity;
 
         let mut rt = Runtime::from_scene(scene);

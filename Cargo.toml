@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/hello-gameplay", "examples/hello-game"]
+members = ["crates/*"]
 # Lapce + Floem live under third_party/ as git subtrees with their own
 # workspaces. Exclude so `cargo check --workspace` here doesn't pull
 # them in; build them via their own root Cargo.toml.
@@ -34,6 +34,13 @@ rust-version = "1.95"
 # with Floem when we rebase the subtree forward.
 wgpu        = { version = "24.0.5", features = ["spirv"] }
 winit       = "0.30"
+# Naga is wgpu's WGSL frontend; we depend on it directly to do
+# reflection on user-supplied post-process shaders -- finding their
+# @group/@binding declarations, struct fields, storage textures,
+# etc. so the engine can build BGLs and pack uniforms without a
+# sidecar metadata file. wgpu 24's bundled naga rev is 24; pin
+# matching here so the parsed `Module` shape lines up.
+naga        = { version = "24", features = ["wgsl-in"] }
 
 # --- ECS / gameplay ---
 bevy_ecs    = "0.18"
@@ -114,6 +121,7 @@ ocarina-bake      = { path = "crates/ocarina-bake", version = "0.1.0" }
 # ocarina-lsp     = { path = "crates/ocarina-lsp", version = "0.1.0" }  # parked during Lapce migration
 
 ocarina-shader    = { path = "crates/ocarina-shader", version = "0.1.0" }
+ocarina-manifest  = { path = "crates/ocarina-manifest", version = "0.1.0" }
 ocarina-scene     = { path = "crates/ocarina-scene", version = "0.1.0" }
 ocarina-physics   = { path = "crates/ocarina-physics", version = "0.1.0", default-features = false }
 ocarina-render    = { path = "crates/ocarina-render", version = "0.1.0", default-features = false }
@@ -150,6 +158,10 @@ cast_sign_loss = "allow"
 lsp-types = { git = "https://github.com/lapce/lsp-types", rev = "feaa1e2ec80975c9dadd400a238ceacf071058e6" }
 regalloc2 = { git = "https://github.com/bytecodealliance/regalloc2", rev = "5d79e12d0a93b10fc181f4da409b4671dd365228" }
 dpi = { git = "https://github.com/rust-windowing/winit", rev = "ee245c569d65fdeacf705ee5eedb564508d10ebe" }
+# Local fork of lapce-xi-rope with a defensive char-boundary clamp in
+# `ChunkIter::next` so a stale buffer index landing mid-UTF-8-char no
+# longer aborts the editor process. See third_party/lapce-xi-rope.
+lapce-xi-rope = { path = "third_party/lapce-xi-rope" }
 
 # Redirect Lapce's git-sourced Floem to our local fork in
 # third_party/floem. Without this, our Floem patches (most importantly
